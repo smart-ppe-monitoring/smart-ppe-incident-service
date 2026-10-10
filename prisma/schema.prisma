@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./node_modules/@prisma/client-incident"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("INCIDENT_DATABASE_URL")
+}
+
+model Incident {
+  id            String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  siteId        String    @map("site_id") @db.Uuid
+  cameraId      String    @map("camera_id") @db.Uuid
+  violationId   String?   @map("violation_id") @db.Uuid
+  violationType String    @map("violation_type") @db.VarChar(50)
+  severity      String    @default("HIGH") @db.VarChar(30)
+  status        String    @default("PENDING_REVIEW") @db.VarChar(30)
+  detectedAt    DateTime  @map("detected_at")
+  resolvedAt    DateTime? @map("resolved_at")
+  description   String?   @db.Text
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  evidences     Evidence[]
+  assignments   IncidentAssignment[]
+  statusHistory IncidentStatusHistory[]
+  comments      IncidentComment[]
+
+  @@index([siteId, status, detectedAt])
+  @@index([cameraId, detectedAt])
+  @@index([status])
+  @@map("incidents")
+}
+
+model Evidence {
+  id           String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  incidentId   String   @map("incident_id") @db.Uuid
+  cameraId     String   @map("camera_id") @db.Uuid
+  evidenceType String   @map("evidence_type") @db.VarChar(30)
+  storageKey   String   @map("storage_key") @db.Text
+  fileName     String   @map("file_name") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(100)
+  fileSize     BigInt   @default(0) @map("file_size")
+  capturedAt   DateTime @map("captured_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  incident   Incident            @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  metadata   EvidenceMetadata?
+  accessLogs EvidenceAccessLog[]
+
+  @@index([incidentId])
+  @@map("evidences")
+}
+
+model EvidenceMetadata {
+  id              String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  evidenceId      String   @unique @map("evidence_id") @db.Uuid
+  width           Int?
+  height          Int?
+  durationSeconds Int?     @map("duration_seconds")
+  frameRate       Decimal? @map("frame_rate") @db.Decimal(6, 2)
+  checksum        String?  @db.VarChar(128)
+  aiDetections    Json?    @map("ai_detections")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@map("evidence_metadata")
+}
+
+model EvidenceAccessLog {
+  id         String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  evidenceId String   @map("evidence_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  action     String   @db.VarChar(30)
+  accessedAt DateTime @default(now()) @map("accessed_at")
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+  @@index([userId])
+  @@map("evidence_access_logs")
+}
+
+model IncidentAssignment {
+  id           String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  incidentId   String    @map("incident_id") @db.Uuid
+  assignedTo   String    @map("assigned_to") @db.Uuid
+  assignedAt   DateTime  @default(now()) @map("assigned_at")
+  unassignedAt DateTime? @map("unassigned_at")
+  status       String    @default("ACTIVE") @db.VarChar(30)
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId])
+  @@index([assignedTo])
+  @@map("incident_assignments")
+}
+
+model IncidentStatusHistory {
+  id         String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  incidentId String   @map("incident_id") @db.Uuid
+  oldStatus  String   @map("old_status") @db.VarChar(30)
+  newStatus  String   @map("new_status") @db.VarChar(30)
+  changedBy  String   @map("changed_by") @db.Uuid
+  changedAt  DateTime @default(now()) @map("changed_at")
+  reason     String?  @db.Text
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId])
+  @@map("incident_status_history")
+}
+
+model IncidentComment {
+  id         String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  incidentId String   @map("incident_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  comment    String   @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId])
+  @@map("incident_comments")
+}
