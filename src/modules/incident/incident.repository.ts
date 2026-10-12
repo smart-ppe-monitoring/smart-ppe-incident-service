@@ -51,6 +51,16 @@ export function serializeIncident<T extends Record<string, unknown>>(incident: T
   return clone;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const SYSTEM_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
+
+export function normalizeActorUuid(actorId?: string | null): string {
+  if (actorId && UUID_REGEX.test(actorId)) {
+    return actorId;
+  }
+  return SYSTEM_ACTOR_UUID;
+}
+
 export class IncidentRepository {
   private readonly db: IncidentPrismaClient;
 
@@ -62,6 +72,22 @@ export class IncidentRepository {
   async createIncident(data: CreateIncidentDto, actorId: string) {
     return this.db.$transaction(
       async (tx: any) => {
+        // Phòng thủ cấp CSDL (Task BE-13): Nếu violationId đã tồn tại trong DB, tái sử dụng bản ghi cũ
+        if (data.violationId) {
+          const existing = await tx.incident.findFirst({
+            where: { violationId: data.violationId },
+            include: {
+              evidences: { include: { metadata: true } },
+              statusHistory: { orderBy: { changedAt: "desc" } },
+              assignments: true,
+              comments: true,
+            },
+          });
+          if (existing) {
+            return serializeIncident(existing);
+          }
+        }
+
         const initialStatus = data.status || INCIDENT_STATUS.PENDING_REVIEW;
 
         const incident = await tx.incident.create({
@@ -78,13 +104,15 @@ export class IncidentRepository {
         });
 
         // Ghi lại bản ghi khởi tạo trạng thái đầu tiên
+        const validActorId = normalizeActorUuid(actorId);
+        const reasonSuffix = actorId && actorId !== validActorId ? ` (${actorId})` : "";
         await tx.incidentStatusHistory.create({
           data: {
             incidentId: incident.id,
             oldStatus: "INITIAL",
             newStatus: initialStatus,
-            changedBy: actorId,
-            reason: "Hệ thống ghi nhận sự cố vi phạm PPE mới",
+            changedBy: validActorId,
+            reason: `Hệ thống ghi nhận sự cố vi phạm PPE mới${reasonSuffix}`,
           },
         });
 
@@ -142,6 +170,33 @@ export class IncidentRepository {
   async findIncidentById(id: string) {
     const incident = await this.db.incident.findUnique({
       where: { id },
+      include: {
+        evidences: {
+          include: { metadata: true },
+          orderBy: { capturedAt: "desc" },
+        },
+        statusHistory: {
+          orderBy: { changedAt: "desc" },
+        },
+        assignments: {
+          orderBy: { assignedAt: "desc" },
+        },
+        comments: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    return incident ? serializeIncident(incident) : null;
+  }
+
+  async findIncidentByViolationId(violationId: string) {
+    if (!violationId || typeof violationId !== "string" || violationId.trim() === "") {
+      return null;
+    }
+
+    const incident = await this.db.incident.findFirst({
+      where: { violationId },
       include: {
         evidences: {
           include: { metadata: true },
@@ -399,12 +454,13 @@ export class IncidentRepository {
           data: updateData,
         });
 
+        const validActorId = normalizeActorUuid(params.changedBy);
         await tx.incidentStatusHistory.create({
           data: {
             incidentId: params.incidentId,
             oldStatus: params.oldStatus,
             newStatus: params.newStatus,
-            changedBy: params.changedBy,
+            changedBy: validActorId,
             reason: params.reason || null,
           },
         });
@@ -454,7 +510,7 @@ export class IncidentRepository {
         return tx.incidentAssignment.create({
           data: {
             incidentId,
-            assignedTo,
+            assignedTo: normalizeActorUuid(assignedTo),
             status: ASSIGNMENT_STATUS.ACTIVE,
           },
         });
@@ -475,7 +531,7 @@ export class IncidentRepository {
     return this.db.incidentComment.create({
       data: {
         incidentId,
-        userId,
+        userId: normalizeActorUuid(userId),
         comment,
       },
     });
@@ -610,6 +666,15 @@ export class IncidentRepository {
         action: data.action,
       },
     });
+  }
+
+  async checkDatabaseHealth(): Promise<boolean> {
+    try {
+      await (this.db as any).$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
