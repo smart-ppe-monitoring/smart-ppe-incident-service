@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "./node_modules/@prisma/client-incident"
+  output   = "../node_modules/@prisma/client-incident"
 }
 
 datasource db {
