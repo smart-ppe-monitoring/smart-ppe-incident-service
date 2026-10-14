@@ -15,6 +15,11 @@ import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
 import { requestIdMiddleware } from "./middlewares/request-id.middleware";
 import { maintenanceGuard } from "./middlewares/maintenance.middleware";
 import { envConfig } from "./config/env.config";
+import { buildOpenApiSpec } from "./config/openapi/openapi.registry";
+import { registerIncidentOpenApi } from "./modules/incident/incident.openapi";
+
+// Khởi tạo các định nghĩa OpenAPI
+registerIncidentOpenApi();
 
 /**
  * Express Application cho Incident Management Microservice (:8893)
@@ -94,6 +99,10 @@ const healthHandler = (_req: express.Request, res: express.Response) => {
 incidentApp.get("/health", healthHandler);
 incidentApp.get("/api/v1/incidents/health", healthHandler);
 incidentApp.get("/incidents/health", healthHandler);
+
+// 3.1 OpenAPI Specification Endpoint
+incidentApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+incidentApp.get("/api/v1/incidents/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
 
 // 4. Mount Incident & Evidence Routes
 // Hỗ trợ dual-mount cả prefix /api/v1/... và /... khi qua Gateway hoặc gọi trực tiếp
