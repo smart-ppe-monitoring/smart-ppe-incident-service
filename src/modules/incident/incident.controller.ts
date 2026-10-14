@@ -129,8 +129,9 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = getActorId(req);
+      const role = req.user?.role;
       const body = req.body as ResolveIncidentDto;
-      const result = await this.service.resolveIncident(id, body, actorId);
+      const result = await this.service.resolveIncident(id, body, actorId, role);
       res.json({
         success: true,
         data: result,
@@ -144,8 +145,9 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = getActorId(req);
+      const role = req.user?.role;
       const body = req.body as CloseIncidentDto;
-      const result = await this.service.closeIncident(id, body, actorId);
+      const result = await this.service.closeIncident(id, body, actorId, role);
       res.json({
         success: true,
         data: result,

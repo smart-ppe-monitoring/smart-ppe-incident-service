@@ -528,6 +528,19 @@ export class IncidentRepository {
     });
   }
 
+  async isUserAssignedToIncident(incidentId: string, userId: string): Promise<boolean> {
+    const normalizedUserId = normalizeActorUuid(userId);
+    const assignment = await this.db.incidentAssignment.findFirst({
+      where: {
+        incidentId,
+        assignedTo: normalizedUserId,
+        status: ASSIGNMENT_STATUS.ACTIVE,
+      },
+      select: { id: true },
+    });
+    return !!assignment;
+  }
+
   // ── Comment Operations ─────────────────────────────────────────────────────
   async addComment(incidentId: string, userId: string, comment: string) {
     return this.db.incidentComment.create({

@@ -37,6 +37,7 @@ import {
   EVIDENCE_ACCESS_ACTION,
   EvidenceAccessAction,
 } from "../../common/constants/incident.constant";
+import { ROLES } from "../../common/constants/role.constant";
 
 export class IncidentService {
   private readonly repository: IncidentRepository;
@@ -150,8 +151,29 @@ export class IncidentService {
     });
   }
 
-  async resolveIncident(id: string, dto: ResolveIncidentDto, actorId: string) {
+  async resolveIncident(
+    id: string,
+    dto: ResolveIncidentDto,
+    actorId: string,
+    userRole?: string,
+  ) {
     const incident = await this.getIncidentById(id);
+
+    if (
+      userRole &&
+      userRole !== ROLES.ADMIN &&
+      userRole !== ROLES.SAFETY_MANAGER &&
+      userRole !== ROLES.MANAGER
+    ) {
+      const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
+      if (!isAssigned) {
+        throw new AppError(
+          "Bạn không có quyền xử lý sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
 
     if (incident.status !== INCIDENT_STATUS.CONFIRMED) {
       throw new AppError(
@@ -171,8 +193,29 @@ export class IncidentService {
     });
   }
 
-  async closeIncident(id: string, dto: CloseIncidentDto, actorId: string) {
+  async closeIncident(
+    id: string,
+    dto: CloseIncidentDto,
+    actorId: string,
+    userRole?: string,
+  ) {
     const incident = await this.getIncidentById(id);
+
+    if (
+      userRole &&
+      userRole !== ROLES.ADMIN &&
+      userRole !== ROLES.SAFETY_MANAGER &&
+      userRole !== ROLES.MANAGER
+    ) {
+      const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
+      if (!isAssigned) {
+        throw new AppError(
+          "Bạn không có quyền đóng sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
 
     if (
       incident.status !== INCIDENT_STATUS.RESOLVED &&
