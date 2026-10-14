@@ -25,6 +25,8 @@ import {
   INCIDENT_STATUS,
   ASSIGNMENT_STATUS,
 } from "../../common/constants/incident.constant";
+import { AppError } from "../../common/errors/app-error";
+import { ERROR_CODE } from "../../common/errors/error-code";
 
 /**
  * Chuyển đổi dữ liệu Evidence an toàn với kiểu BigInt của trường fileSize
@@ -547,7 +549,11 @@ export class IncidentRepository {
   // ── Evidence Operations ────────────────────────────────────────────────────
   async createEvidence(data: CreateEvidenceDto) {
     if (!data.incidentId) {
-      throw new Error("incidentId là bắt buộc khi tạo Evidence");
+      throw new AppError(
+        "incidentId là bắt buộc khi tạo Evidence",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
     }
 
     return this.db.$transaction(
