@@ -159,19 +159,21 @@ export class IncidentService {
   ) {
     const incident = await this.getIncidentById(id);
 
-    if (
-      userRole &&
-      userRole !== ROLES.ADMIN &&
-      userRole !== ROLES.SAFETY_MANAGER &&
-      userRole !== ROLES.MANAGER
-    ) {
-      const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
-      if (!isAssigned) {
-        throw new AppError(
-          "Bạn không có quyền xử lý sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
-          403,
-          ERROR_CODE.FORBIDDEN,
-        );
+    if (userRole) {
+      const isManagerOrAdmin =
+        userRole === ROLES.ADMIN ||
+        userRole === ROLES.SAFETY_MANAGER ||
+        userRole === ROLES.MANAGER;
+
+      if (!isManagerOrAdmin) {
+        const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
+        if (!isAssigned) {
+          throw new AppError(
+            "Bạn không có quyền xử lý sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
       }
     }
 
@@ -201,19 +203,21 @@ export class IncidentService {
   ) {
     const incident = await this.getIncidentById(id);
 
-    if (
-      userRole &&
-      userRole !== ROLES.ADMIN &&
-      userRole !== ROLES.SAFETY_MANAGER &&
-      userRole !== ROLES.MANAGER
-    ) {
-      const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
-      if (!isAssigned) {
-        throw new AppError(
-          "Bạn không có quyền đóng sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
-          403,
-          ERROR_CODE.FORBIDDEN,
-        );
+    if (userRole) {
+      const isManagerOrAdmin =
+        userRole === ROLES.ADMIN ||
+        userRole === ROLES.SAFETY_MANAGER ||
+        userRole === ROLES.MANAGER;
+
+      if (!isManagerOrAdmin) {
+        const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
+        if (!isAssigned) {
+          throw new AppError(
+            "Bạn không có quyền đóng sự cố này (chỉ người được phân công hoặc quản lý mới có quyền)",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
       }
     }
 

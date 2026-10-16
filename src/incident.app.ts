@@ -100,9 +100,11 @@ incidentApp.get("/health", healthHandler);
 incidentApp.get("/api/v1/incidents/health", healthHandler);
 incidentApp.get("/incidents/health", healthHandler);
 
-// 3.1 OpenAPI Specification Endpoint
-incidentApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
-incidentApp.get("/api/v1/incidents/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+// 3.1 OpenAPI Specification Endpoint (Chỉ mở trên dev/staging, ẩn trên production)
+if (envConfig.nodeEnv !== "production") {
+  incidentApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+  incidentApp.get("/api/v1/incidents/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+}
 
 // 4. Mount Incident & Evidence Routes
 // Hỗ trợ dual-mount cả prefix /api/v1/... và /... khi qua Gateway hoặc gọi trực tiếp
