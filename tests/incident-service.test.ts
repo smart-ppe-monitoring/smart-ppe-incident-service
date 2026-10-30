@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
+import jwt from "jsonwebtoken";
 import {
   INCIDENT_STATUS,
   VIOLATION_TYPE,
@@ -8,6 +9,13 @@ import {
   ASSIGNMENT_STATUS,
   VALID_INCIDENT_TRANSITIONS,
 } from "../src/common/constants/incident.constant";
+import { ROLES } from "../src/common/constants/role.constant";
+import { JWT_PURPOSE } from "../src/common/constants/jwt.constant";
+import {
+  requirePermission,
+  requireAnyPermission,
+} from "../src/middlewares/permission.middleware";
+import { authMiddleware } from "../src/middlewares/auth.middleware";
 import {
   createIncidentSchema,
   updateIncidentSchema,
@@ -623,6 +631,205 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
       assert.strictEqual(passedQuery.search, "NO_VEST");
       assert.strictEqual(passedQuery.sortBy, "detectedAt");
       assert.strictEqual(passedQuery.sortOrder, "asc");
+    });
+  });
+
+  // ── 7. Security Patches: SEC-01 & SEC-02 ───────────────────────────────────
+  describe("7. Security Patches: SEC-01 & SEC-02", () => {
+    describe("SEC-01: 2FA Purpose Isolation in Auth Middleware", () => {
+      it("should reject token with purpose 2FA_VERIFICATION", () => {
+        mock.method(jwt, "decode", () => ({
+          header: { alg: "RS256" },
+          payload: {},
+        }));
+        mock.method(jwt, "verify", () => ({
+          sub: "usr-2fa-1",
+          email: "pending2fa@test.com",
+          role: ROLES.SAFETY_OFFICER,
+          purpose: JWT_PURPOSE.TWO_FACTOR,
+        }));
+
+        try {
+          const req: any = {
+            headers: { authorization: "Bearer dummy-2fa-token" },
+          };
+          let error: any = null;
+          authMiddleware(req, {} as any, (err?: any) => {
+            error = err;
+          });
+
+          assert.ok(error instanceof AppError);
+          assert.strictEqual(error.statusCode, 401);
+          assert.strictEqual(error.code, ERROR_CODE.UNAUTHORIZED);
+          assert.strictEqual(error.message, "Token không hợp lệ để truy cập tài nguyên được bảo vệ");
+          assert.strictEqual(req.user, undefined);
+        } finally {
+          mock.restoreAll();
+        }
+      });
+
+      it("should reject token with type TEMP or non-access purpose", () => {
+        mock.method(jwt, "decode", () => ({
+          header: { alg: "RS256" },
+          payload: {},
+        }));
+        mock.method(jwt, "verify", () => ({
+          sub: "usr-temp-1",
+          email: "temp@test.com",
+          role: ROLES.SAFETY_OFFICER,
+          type: "TEMP",
+        }));
+
+        try {
+          const req: any = {
+            headers: { authorization: "Bearer dummy-temp-token" },
+          };
+          let error: any = null;
+          authMiddleware(req, {} as any, (err?: any) => {
+            error = err;
+          });
+
+          assert.ok(error instanceof AppError);
+          assert.strictEqual(error.statusCode, 401);
+          assert.strictEqual(error.code, ERROR_CODE.UNAUTHORIZED);
+          assert.strictEqual(error.message, "Token không hợp lệ để truy cập tài nguyên được bảo vệ");
+        } finally {
+          mock.restoreAll();
+        }
+      });
+
+      it("should accept valid token with purpose ACCESS", () => {
+        mock.method(jwt, "decode", () => ({
+          header: { alg: "RS256" },
+          payload: {},
+        }));
+        mock.method(jwt, "verify", () => ({
+          sub: "usr-valid-1",
+          email: "valid@test.com",
+          role: ROLES.SAFETY_OFFICER,
+          purpose: JWT_PURPOSE.ACCESS,
+          permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+        }));
+
+        try {
+          const req: any = {
+            headers: { authorization: "Bearer dummy-access-token" },
+          };
+          let error: any = null;
+          authMiddleware(req, {} as any, (err?: any) => {
+            error = err;
+          });
+
+          assert.strictEqual(error, undefined);
+          assert.ok(req.user);
+          assert.strictEqual(req.user.id, "usr-valid-1");
+        } finally {
+          mock.restoreAll();
+        }
+      });
+    });
+
+    describe("SEC-02: API Key Admin Owner Permission Scoping", () => {
+      it("should restrict Admin API Key when required permission is absent from apiKey.permissions", () => {
+        const req: any = {
+          user: {
+            id: "usr-admin-1",
+            email: "admin@test.com",
+            role: ROLES.ADMIN,
+            permissions: [],
+          },
+          apiKey: {
+            id: "key-readonly-1",
+            name: "Read-Only Key",
+            prefix: "ppe_key",
+            permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+          },
+        };
+
+        let error: any = null;
+        const middleware = requirePermission(PERMISSIONS.PPE_INCIDENT_DELETE);
+        middleware(req, {} as any, (err?: any) => {
+          error = err;
+        });
+
+        assert.ok(error instanceof AppError);
+        assert.strictEqual(error.statusCode, 403);
+        assert.strictEqual(error.code, ERROR_CODE.FORBIDDEN);
+      });
+
+      it("should permit Admin API Key when required permission is present in apiKey.permissions", () => {
+        const req: any = {
+          user: {
+            id: "usr-admin-1",
+            email: "admin@test.com",
+            role: ROLES.ADMIN,
+            permissions: [],
+          },
+          apiKey: {
+            id: "key-delete-1",
+            name: "Delete-Capable Key",
+            prefix: "ppe_key",
+            permissions: [PERMISSIONS.PPE_INCIDENT_DELETE],
+          },
+        };
+
+        let error: any = null;
+        const middleware = requirePermission(PERMISSIONS.PPE_INCIDENT_DELETE);
+        middleware(req, {} as any, (err?: any) => {
+          error = err;
+        });
+
+        assert.strictEqual(error, undefined);
+      });
+
+      it("should allow human Admin without API Key to bypass permission checks", () => {
+        const req: any = {
+          user: {
+            id: "usr-admin-1",
+            email: "admin@test.com",
+            role: ROLES.ADMIN,
+            permissions: [],
+          },
+        };
+
+        let error: any = null;
+        const middleware = requirePermission(PERMISSIONS.PPE_INCIDENT_DELETE);
+        middleware(req, {} as any, (err?: any) => {
+          error = err;
+        });
+
+        assert.strictEqual(error, undefined);
+      });
+
+      it("should enforce scoping in requireAnyPermission for Admin API Key", () => {
+        const req: any = {
+          user: {
+            id: "usr-admin-1",
+            email: "admin@test.com",
+            role: ROLES.ADMIN,
+            permissions: [],
+          },
+          apiKey: {
+            id: "key-readonly-1",
+            name: "Read-Only Key",
+            prefix: "ppe_key",
+            permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+          },
+        };
+
+        let error: any = null;
+        const middleware = requireAnyPermission(
+          PERMISSIONS.PPE_INCIDENT_DELETE,
+          PERMISSIONS.PPE_INCIDENT_MANAGE,
+        );
+        middleware(req, {} as any, (err?: any) => {
+          error = err;
+        });
+
+        assert.ok(error instanceof AppError);
+        assert.strictEqual(error.statusCode, 403);
+        assert.strictEqual(error.code, ERROR_CODE.FORBIDDEN);
+      });
     });
   });
 });

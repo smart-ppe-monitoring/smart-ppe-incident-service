@@ -99,6 +99,23 @@ export async function authMiddleware(
       return;
     }
 
+    // SEC-01: Chặn tuyệt đối token tạm thời (2FA verification / temp token) truy cập tài nguyên bảo vệ
+    const jwtPayload = payload as Record<string, unknown>;
+    if (
+      jwtPayload.purpose === JWT_PURPOSE.TWO_FACTOR ||
+      jwtPayload.type === "TEMP" ||
+      (jwtPayload.purpose && jwtPayload.purpose !== JWT_PURPOSE.ACCESS)
+    ) {
+      next(
+        new AppError(
+          "Token không hợp lệ để truy cập tài nguyên được bảo vệ",
+          401,
+          ERROR_CODE.UNAUTHORIZED,
+        ),
+      );
+      return;
+    }
+
     req.user = {
       id: payload.id || payload.sub,
       email: payload.email,

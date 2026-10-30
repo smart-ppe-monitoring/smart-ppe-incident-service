@@ -91,7 +91,8 @@ export function requirePermission(...permissions: string[]) {
 
       const userPermissions = resolveSatellitePermissions(req);
 
-      if (req.user.role === ROLES.ADMIN || req.user.role === "ADMIN") {
+      // Admin bypasses permission checks only when authenticating directly as a human user (not restricted by API Key scoping)
+      if (!req.apiKey && (req.user.role === ROLES.ADMIN || req.user.role === "ADMIN")) {
         return next();
       }
 
@@ -122,7 +123,8 @@ export function requireAnyPermission(...permissions: string[]) {
 
       const userPermissions = resolveSatellitePermissions(req);
 
-      if (req.user.role === ROLES.ADMIN || req.user.role === "ADMIN") {
+      // Admin bypasses permission checks only when authenticating directly as a human user (not restricted by API Key scoping)
+      if (!req.apiKey && (req.user.role === ROLES.ADMIN || req.user.role === "ADMIN")) {
         return next();
       }
 
