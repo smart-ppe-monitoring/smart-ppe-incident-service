@@ -634,8 +634,8 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
     });
   });
 
-  // ── 7. Security Patches: SEC-01 & SEC-02 ───────────────────────────────────
-  describe("7. Security Patches: SEC-01 & SEC-02", () => {
+  // ── 7. Security Patches: SEC-01 to SEC-04 ─────────────────────────────────
+  describe("7. Security Patches: SEC-01 to SEC-04", () => {
     describe("SEC-01: 2FA Purpose Isolation in Auth Middleware", () => {
       it("should reject token with purpose 2FA_VERIFICATION", () => {
         mock.method(jwt, "decode", () => ({
@@ -829,6 +829,243 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
         assert.ok(error instanceof AppError);
         assert.strictEqual(error.statusCode, 403);
         assert.strictEqual(error.code, ERROR_CODE.FORBIDDEN);
+      });
+    });
+
+    // ── SEC-03: Storage Cleanup on Incident Deletion ─────────────────────────
+    describe("SEC-03: Storage Cleanup on Incident Deletion", () => {
+      const siteId = "11111111-1111-4111-8111-111111111111";
+      const incidentId = "22222222-2222-4222-8222-222222222222";
+
+      it("should delete all associated evidence objects from MinIO storage before deleting incident record", async () => {
+        const deletedKeys: string[] = [];
+        const mockStorage = {
+          deleteObject: mock.fn(async (key: string) => {
+            deletedKeys.push(key);
+          }),
+        } as any;
+
+        const mockRepo = {
+          findIncidentById: mock.fn(async (id: string) => ({
+            id,
+            siteId,
+            status: INCIDENT_STATUS.CONFIRMED,
+            evidences: [
+              { id: "ev-1", storageKey: `evidences/${siteId}/cam-1/2026/10/30/${incidentId}/snap1.jpg` },
+              { id: "ev-2", storageKey: `evidences/${siteId}/cam-1/2026/10/30/${incidentId}/video.mp4` },
+            ],
+          })),
+          deleteIncident: mock.fn(async (id: string) => ({ id })),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+        const result = await service.deleteIncident(incidentId);
+
+        assert.strictEqual(result.id, incidentId);
+        assert.strictEqual(mockStorage.deleteObject.mock.callCount(), 2);
+        assert.strictEqual(deletedKeys.length, 2);
+        assert.strictEqual(deletedKeys[0], `evidences/${siteId}/cam-1/2026/10/30/${incidentId}/snap1.jpg`);
+        assert.strictEqual(deletedKeys[1], `evidences/${siteId}/cam-1/2026/10/30/${incidentId}/video.mp4`);
+        assert.strictEqual(mockRepo.deleteIncident.mock.callCount(), 1);
+      });
+
+      it("should continue and delete incident from repository even if storage deletion fails gracefully", async () => {
+        const mockStorage = {
+          deleteObject: mock.fn(async () => {
+            throw new Error("MinIO connection reset");
+          }),
+        } as any;
+
+        const mockRepo = {
+          findIncidentById: mock.fn(async (id: string) => ({
+            id,
+            siteId,
+            status: INCIDENT_STATUS.PENDING_REVIEW,
+            evidences: [
+              { id: "ev-1", storageKey: `evidences/${siteId}/cam-1/2026/10/30/${incidentId}/snap1.jpg` },
+            ],
+          })),
+          deleteIncident: mock.fn(async (id: string) => ({ id })),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+        const result = await service.deleteIncident(incidentId);
+
+        assert.strictEqual(result.id, incidentId);
+        assert.strictEqual(mockRepo.deleteIncident.mock.callCount(), 1);
+      });
+    });
+
+    // ── SEC-04: Cross-Tenant Storage Key Isolation in AddEvidence ────────────
+    describe("SEC-04: Cross-Tenant Storage Key Isolation in AddEvidence", () => {
+      const siteId = "11111111-1111-4111-8111-111111111111";
+      const otherSiteId = "33333333-3333-4333-8333-333333333333";
+      const incidentId = "22222222-2222-4222-8222-222222222222";
+      const otherIncidentId = "44444444-4444-4444-8444-444444444444";
+      const cameraId = "55555555-5555-4555-8555-555555555555";
+
+      it("should reject storageKey not starting with evidences/ prefix in schema", () => {
+        const payload = {
+          cameraId,
+          evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+          storageKey: "invoices/company-secret.pdf",
+          fileName: "snap.jpg",
+          mimeType: "image/jpeg",
+          capturedAt: new Date().toISOString(),
+        };
+        const result = createEvidenceSchema.safeParse(payload);
+        assert.strictEqual(result.success, false);
+      });
+
+      it("should reject storageKey with absolute path or double slashes in schema", () => {
+        const payloadRoot = {
+          cameraId,
+          evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+          storageKey: "/evidences/test.jpg",
+          fileName: "snap.jpg",
+          mimeType: "image/jpeg",
+          capturedAt: new Date().toISOString(),
+        };
+        assert.strictEqual(createEvidenceSchema.safeParse(payloadRoot).success, false);
+
+        const payloadDoubleSlash = {
+          cameraId,
+          evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+          storageKey: "evidences//test.jpg",
+          fileName: "snap.jpg",
+          mimeType: "image/jpeg",
+          capturedAt: new Date().toISOString(),
+        };
+        assert.strictEqual(createEvidenceSchema.safeParse(payloadDoubleSlash).success, false);
+      });
+
+      it("should reject adding evidence when storageKey belongs to a different siteId", async () => {
+        const mockRepo = {
+          findIncidentById: mock.fn(async (id: string) => ({
+            id,
+            siteId,
+            status: INCIDENT_STATUS.CONFIRMED,
+          })),
+        } as any;
+
+        const service = new IncidentService(mockRepo);
+
+        await assert.rejects(
+          async () => {
+            await service.addEvidence(incidentId, {
+              cameraId,
+              evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+              storageKey: `evidences/${otherSiteId}/${cameraId}/2026/10/30/${incidentId}/snap.jpg`,
+              fileName: "snap.jpg",
+              mimeType: "image/jpeg",
+              capturedAt: new Date(),
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            assert.ok(err.message.includes("công trường"));
+            return true;
+          },
+        );
+      });
+
+      it("should reject adding evidence when storageKey belongs to a different incidentId", async () => {
+        const mockRepo = {
+          findIncidentById: mock.fn(async (id: string) => ({
+            id,
+            siteId,
+            status: INCIDENT_STATUS.CONFIRMED,
+          })),
+        } as any;
+
+        const service = new IncidentService(mockRepo);
+
+        await assert.rejects(
+          async () => {
+            await service.addEvidence(incidentId, {
+              cameraId,
+              evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+              storageKey: `evidences/${siteId}/${cameraId}/2026/10/30/${otherIncidentId}/snap.jpg`,
+              fileName: "snap.jpg",
+              mimeType: "image/jpeg",
+              capturedAt: new Date(),
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            assert.ok(err.message.includes("sự cố"));
+            return true;
+          },
+        );
+      });
+
+      it("should permit adding evidence when storageKey matches current incident site and ID", async () => {
+        const validKey = `evidences/${siteId}/${cameraId}/2026/10/30/${incidentId}/snap.jpg`;
+        const mockRepo = {
+          findIncidentById: mock.fn(async (id: string) => ({
+            id,
+            siteId,
+            status: INCIDENT_STATUS.CONFIRMED,
+          })),
+          createEvidence: mock.fn(async (data: any) => ({
+            id: "ev-created-1",
+            ...data,
+          })),
+        } as any;
+
+        const service = new IncidentService(mockRepo);
+        const result = await service.addEvidence(incidentId, {
+          cameraId,
+          evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+          storageKey: validKey,
+          fileName: "snap.jpg",
+          mimeType: "image/jpeg",
+          capturedAt: new Date(),
+        });
+
+        assert.strictEqual(result.id, "ev-created-1");
+        assert.strictEqual(result.storageKey, validKey);
+        assert.strictEqual(mockRepo.createEvidence.mock.callCount(), 1);
+      });
+
+      it("should reject creating incident with initialEvidence having mismatched siteId in storageKey", async () => {
+        const mockRepo = {
+          createIncident: mock.fn(),
+        } as any;
+
+        const service = new IncidentService(mockRepo);
+
+        await assert.rejects(
+          async () => {
+            await service.createIncident(
+              {
+                siteId,
+                cameraId,
+                violationType: VIOLATION_TYPE.NO_HELMET,
+                detectedAt: new Date(),
+                initialEvidence: {
+                  cameraId,
+                  evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+                  storageKey: `evidences/${otherSiteId}/${cameraId}/2026/10/30/fake/snap.jpg`,
+                  fileName: "snap.jpg",
+                  mimeType: "image/jpeg",
+                  capturedAt: new Date(),
+                },
+              },
+              "usr-1",
+            );
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            return true;
+          },
+        );
       });
     });
   });
