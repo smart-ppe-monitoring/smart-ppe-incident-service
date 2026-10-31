@@ -33,20 +33,28 @@ export const createEvidenceMetadataSchema = z.object({
   aiDetections: z.record(z.unknown()).nullable().optional(),
 });
 
+export const storageKeySchema = z
+  .string({ required_error: "storageKey là bắt buộc" })
+  .trim()
+  .min(3, "storageKey tối thiểu 3 ký tự")
+  .max(1000, "storageKey tối đa 1000 ký tự")
+  .refine((val) => !val.includes(".."), {
+    message: "storageKey không được chứa ký tự path traversal (..)",
+  })
+  .refine((val) => !val.startsWith("/") && !val.includes("//"), {
+    message: "storageKey không được chứa đường dẫn tuyệt đối hoặc dấu gạch chéo lặp lại",
+  })
+  .refine((val) => val.startsWith("evidences/"), {
+    message: "storageKey phải bắt đầu bằng tiền tố 'evidences/'",
+  });
+
 export const createEvidenceSchema = z.object({
   cameraId: uuidSchema,
   evidenceType: z.enum(
     [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
     { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | VIDEO_CLIP)" }) },
   ),
-  storageKey: z
-    .string({ required_error: "storageKey là bắt buộc" })
-    .trim()
-    .min(3, "storageKey tối thiểu 3 ký tự")
-    .max(1000, "storageKey tối đa 1000 ký tự")
-    .refine((val) => !val.includes(".."), {
-      message: "storageKey không được chứa ký tự path traversal (..)",
-    }),
+  storageKey: storageKeySchema,
   fileName: z
     .string({ required_error: "Tên tệp là bắt buộc" })
     .trim()
@@ -118,14 +126,7 @@ export const createIncidentSchema = z.object({
     .object({
       cameraId: uuidSchema.optional(),
       evidenceType: z.enum([EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP]),
-      storageKey: z
-        .string()
-        .trim()
-        .min(3)
-        .max(1000)
-        .refine((val) => !val.includes(".."), {
-          message: "storageKey không được chứa ký tự path traversal (..)",
-        }),
+      storageKey: storageKeySchema,
       fileName: z.string().trim().min(1).max(255),
       mimeType: z
         .string()

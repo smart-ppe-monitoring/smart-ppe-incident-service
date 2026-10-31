@@ -12,7 +12,7 @@ model Incident {
   id            String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
   siteId        String    @map("site_id") @db.Uuid
   cameraId      String    @map("camera_id") @db.Uuid
-  violationId   String?   @map("violation_id") @db.Uuid
+  violationId   String?   @unique @map("violation_id") @db.Uuid
   violationType String    @map("violation_type") @db.VarChar(50)
   severity      String    @default("HIGH") @db.VarChar(30)
   status        String    @default("PENDING_REVIEW") @db.VarChar(30)
@@ -124,4 +124,21 @@ model IncidentComment {
 
   @@index([incidentId])
   @@map("incident_comments")
+}
+
+model OutboxEvent {
+  id          String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  eventType   String    @map("event_type")
+  payload     Json
+  aggregateId String?   @map("aggregate_id")
+  status      String    @default("PENDING") // PENDING, PUBLISHED, FAILED
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([eventType])
+  @@map("outbox_events")
 }

@@ -248,7 +248,14 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = req.user?.id;
-      const result = await this.service.getEvidenceById(id, actorId);
+      const userRole = req.user?.role;
+      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
+      const userSiteIds = req.user?.siteIds;
+      const result = await this.service.getEvidenceById(id, actorId, {
+        role: userRole,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
+      });
       res.json({
         success: true,
         data: result,
@@ -345,6 +352,9 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = req.user?.id;
+      const userRole = req.user?.role;
+      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
+      const userSiteIds = req.user?.siteIds;
       const query = req.query as unknown as DownloadUrlQueryDto;
       const expiresIn = query.expiresInSeconds
         ? Number(query.expiresInSeconds)
@@ -357,6 +367,11 @@ export class IncidentController {
         actorId,
         expiresIn,
         action,
+        {
+          role: userRole,
+          siteId: userSiteId,
+          siteIds: userSiteIds,
+        },
       );
       res.json({
         success: true,
@@ -374,7 +389,14 @@ export class IncidentController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.verifyEvidenceIntegrity(id);
+      const userRole = req.user?.role;
+      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
+      const userSiteIds = req.user?.siteIds;
+      const result = await this.service.verifyEvidenceIntegrity(id, {
+        role: userRole,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
+      });
       res.json({
         success: true,
         data: result,

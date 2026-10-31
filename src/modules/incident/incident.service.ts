@@ -38,6 +38,7 @@ import {
   EvidenceAccessAction,
 } from "../../common/constants/incident.constant";
 import { ROLES } from "../../common/constants/role.constant";
+import { isUuid } from "../../common/helpers/uuid.helper";
 
 export class IncidentService {
   private readonly repository: IncidentRepository;
@@ -56,6 +57,17 @@ export class IncidentService {
 
   // ── Incident CRUD Operations ───────────────────────────────────────────────
   async createIncident(data: CreateIncidentDto, actorId: string) {
+    if (data.initialEvidence?.storageKey && data.siteId) {
+      const parts = data.initialEvidence.storageKey.split("/");
+      if (parts.length >= 3 && isUuid(parts[1]) && parts[1] !== data.siteId) {
+        throw new AppError(
+          "storageKey của bằng chứng ban đầu không thuộc phạm vi công trường của sự cố",
+          400,
+          ERROR_CODE.VALIDATION_ERROR,
+        );
+      }
+    }
+
     const created = await this.repository.createIncident(data, actorId);
 
     // Tự động phát thông báo sự cố vi phạm PPE cho cán bộ an toàn (Task BE-08)
@@ -116,7 +128,27 @@ export class IncidentService {
   }
 
   async deleteIncident(id: string) {
-    await this.getIncidentById(id);
+    const incident = await this.getIncidentById(id);
+
+    // SEC-03: Dọn dẹp toàn bộ tệp bằng chứng liên quan trên Object Storage (MinIO/S3)
+    // để tránh rò rỉ hoặc để lại tệp mồ côi (orphaned objects) khi bản ghi bị xóa khỏi CSDL
+    if (incident.evidences && incident.evidences.length > 0) {
+      await Promise.all(
+        incident.evidences.map(async (ev: any) => {
+          if (ev.storageKey) {
+            try {
+              await this.storage.deleteObject(ev.storageKey);
+            } catch (err) {
+              console.warn(
+                `[IncidentService] Không thể dọn dẹp tệp MinIO '${ev.storageKey}' khi xóa sự cố:`,
+                err,
+              );
+            }
+          }
+        }),
+      );
+    }
+
     return this.repository.deleteIncident(id);
   }
 
@@ -290,13 +322,48 @@ export class IncidentService {
       );
     }
 
+    // SEC-04: Phòng thủ chống tráo đổi bằng chứng xuyên công trường (Cross-Tenant/Cross-Incident Substitution)
+    if (!dto.storageKey.startsWith("evidences/")) {
+      throw new AppError(
+        "storageKey phải bắt đầu bằng tiền tố 'evidences/'",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    if (incident.siteId) {
+      const parts = dto.storageKey.split("/");
+      if (parts.length >= 3 && isUuid(parts[1])) {
+        if (parts[1] !== incident.siteId) {
+          throw new AppError(
+            "storageKey không thuộc phạm vi công trường của sự cố này",
+            400,
+            ERROR_CODE.VALIDATION_ERROR,
+          );
+        }
+      }
+      if (parts.length >= 7 && isUuid(parts[6])) {
+        if (parts[6] !== incident.id) {
+          throw new AppError(
+            "storageKey không thuộc phạm vi sự cố này",
+            400,
+            ERROR_CODE.VALIDATION_ERROR,
+          );
+        }
+      }
+    }
+
     return this.repository.createEvidence({
       ...dto,
       incidentId,
     });
   }
 
-  async getEvidenceById(id: string, actorId?: string) {
+  async getEvidenceById(
+    id: string,
+    actorId?: string,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+  ) {
     const evidence = await this.repository.findEvidenceById(id);
     if (!evidence) {
       throw new AppError(
@@ -304,6 +371,31 @@ export class IncidentService {
         404,
         ERROR_CODE.EVIDENCE_NOT_FOUND,
       );
+    }
+
+    // SEC-09: Kiểm tra quyền sở hữu công trường (Site-level Ownership / BOLA guard)
+    if (userContext && evidence.incident?.siteId) {
+      const isAdmin =
+        userContext.role === ROLES.ADMIN ||
+        userContext.role === "ADMIN";
+
+      if (!isAdmin) {
+        const allowedSiteIds = [
+          ...(userContext.siteId ? [userContext.siteId] : []),
+          ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
+        ];
+
+        if (
+          allowedSiteIds.length > 0 &&
+          !allowedSiteIds.includes(evidence.incident.siteId)
+        ) {
+          throw new AppError(
+            "Bạn không có quyền truy cập hoặc tải bằng chứng thuộc công trường này",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+      }
     }
 
     if (actorId) {
@@ -464,9 +556,10 @@ export class IncidentService {
     actorId?: string,
     expiresInSeconds: number = 3600,
     action: EvidenceAccessAction = EVIDENCE_ACCESS_ACTION.DOWNLOAD,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
   ): Promise<EvidenceDownloadUrlResponseDto> {
-    // 1. Chỉ tìm bằng chứng, không truyền actorId vào getEvidenceById để tránh ghi log VIEW kép
-    const evidence = await this.getEvidenceById(evidenceId);
+    // 1. Chỉ tìm bằng chứng và kiểm tra quyền công trường, không truyền actorId vào getEvidenceById để tránh ghi log VIEW kép
+    const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
 
     // 2. Sinh presigned URL với content-disposition tương ứng (inline vs attachment)
     const downloadUrl = await this.storage.getPresignedDownloadUrl(
@@ -506,8 +599,9 @@ export class IncidentService {
    */
   async verifyEvidenceIntegrity(
     evidenceId: string,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
   ): Promise<VerifyEvidenceChecksumResponseDto> {
-    const evidence = await this.getEvidenceById(evidenceId);
+    const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
     const expectedChecksum = evidence.metadata?.checksum;
 
     if (!expectedChecksum) {

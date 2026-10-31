@@ -13,19 +13,6 @@ export function extractTokenFromRequest(req: Request): string | undefined {
       token = authHeader.split(" ")[1];
     }
   }
-
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!token && isAllowedQueryTokenEndpoint) {
-    const queryToken = req.query?.ticket || req.query?.token;
-    if (typeof queryToken === "string") {
-      token = queryToken;
-    }
-  }
   return token;
 }
 
@@ -34,16 +21,11 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!isAllowedQueryTokenEndpoint && req.query?.token) {
+  // SEC-16: Chặn hoàn toàn việc truyền JWT qua query string trên API sự cố để tránh rò rỉ qua access log và browser history
+  if (req.query?.token || req.query?.ticket || req.query?.access_token) {
     next(
       new AppError(
-        "Không được phép truyền token xác thực qua query string trên API thông thường để tránh rò rỉ qua log và browser history",
+        "Không được phép truyền token xác thực qua query string trên API sự cố để tránh rò rỉ qua log và browser history",
         400,
         ERROR_CODE.VALIDATION_ERROR,
       ),
@@ -99,11 +81,47 @@ export async function authMiddleware(
       return;
     }
 
+    // SEC-01: Chặn tuyệt đối token tạm thời (2FA verification / temp token) truy cập tài nguyên bảo vệ
+    const jwtPayload = payload as Record<string, unknown>;
+    if (
+      jwtPayload.purpose === JWT_PURPOSE.TWO_FACTOR ||
+      jwtPayload.type === "TEMP" ||
+      (jwtPayload.purpose && jwtPayload.purpose !== JWT_PURPOSE.ACCESS)
+    ) {
+      next(
+        new AppError(
+          "Token không hợp lệ để truy cập tài nguyên được bảo vệ",
+          401,
+          ERROR_CODE.UNAUTHORIZED,
+        ),
+      );
+      return;
+    }
+
+    // SEC-06: Chặn token có cờ mustChangePassword truy cập satellite services
+    if (
+      jwtPayload.mustChangePassword === true ||
+      jwtPayload.mustChangePassword === "true"
+    ) {
+      next(
+        new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        ),
+      );
+      return;
+    }
+
     req.user = {
       id: payload.id || payload.sub,
       email: payload.email,
       role: payload.role,
       roleId: payload.roleId,
+      siteId: typeof jwtPayload.siteId === "string" ? jwtPayload.siteId : undefined,
+      siteIds: Array.isArray(jwtPayload.siteIds)
+        ? (jwtPayload.siteIds as string[])
+        : undefined,
       permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
     };
 
