@@ -56,11 +56,28 @@ export function serializeIncident<T extends Record<string, unknown>>(incident: T
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SYSTEM_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
 
-export function normalizeActorUuid(actorId?: string | null): string {
-  if (actorId && UUID_REGEX.test(actorId)) {
+export function normalizeActorUuid(
+  actorId?: string | null,
+  allowSystemFallback: boolean = false,
+): string {
+  if (!actorId) {
+    if (allowSystemFallback) {
+      return SYSTEM_ACTOR_UUID;
+    }
+    throw new AppError(
+      "ID người thực hiện (actorId) là bắt buộc",
+      400,
+      ERROR_CODE.VALIDATION_ERROR,
+    );
+  }
+  if (UUID_REGEX.test(actorId)) {
     return actorId;
   }
-  return SYSTEM_ACTOR_UUID;
+  throw new AppError(
+    "Định dạng actorId không hợp lệ (phải là định dạng UUID)",
+    400,
+    ERROR_CODE.VALIDATION_ERROR,
+  );
 }
 
 export class IncidentRepository {
@@ -105,16 +122,15 @@ export class IncidentRepository {
           },
         });
 
-        // Ghi lại bản ghi khởi tạo trạng thái đầu tiên
-        const validActorId = normalizeActorUuid(actorId);
-        const reasonSuffix = actorId && actorId !== validActorId ? ` (${actorId})` : "";
+        // Ghi lại bản ghi khởi tạo trạng thái đầu tiên (cho phép System actor nếu không có actorId)
+        const validActorId = normalizeActorUuid(actorId, true);
         await tx.incidentStatusHistory.create({
           data: {
             incidentId: incident.id,
             oldStatus: "INITIAL",
             newStatus: initialStatus,
             changedBy: validActorId,
-            reason: `Hệ thống ghi nhận sự cố vi phạm PPE mới${reasonSuffix}`,
+            reason: "Hệ thống ghi nhận sự cố vi phạm PPE mới",
           },
         });
 
@@ -456,7 +472,7 @@ export class IncidentRepository {
           data: updateData,
         });
 
-        const validActorId = normalizeActorUuid(params.changedBy);
+        const validActorId = normalizeActorUuid(params.changedBy, false);
         await tx.incidentStatusHistory.create({
           data: {
             incidentId: params.incidentId,
@@ -512,7 +528,7 @@ export class IncidentRepository {
         return tx.incidentAssignment.create({
           data: {
             incidentId,
-            assignedTo: normalizeActorUuid(assignedTo),
+            assignedTo: normalizeActorUuid(assignedTo, false),
             status: ASSIGNMENT_STATUS.ACTIVE,
           },
         });
@@ -529,11 +545,13 @@ export class IncidentRepository {
   }
 
   async isUserAssignedToIncident(incidentId: string, userId: string): Promise<boolean> {
-    const normalizedUserId = normalizeActorUuid(userId);
+    if (!userId || !UUID_REGEX.test(userId)) {
+      return false;
+    }
     const assignment = await this.db.incidentAssignment.findFirst({
       where: {
         incidentId,
-        assignedTo: normalizedUserId,
+        assignedTo: userId,
         status: ASSIGNMENT_STATUS.ACTIVE,
       },
       select: { id: true },
@@ -543,10 +561,11 @@ export class IncidentRepository {
 
   // ── Comment Operations ─────────────────────────────────────────────────────
   async addComment(incidentId: string, userId: string, comment: string) {
+    const validUserId = normalizeActorUuid(userId, false);
     return this.db.incidentComment.create({
       data: {
         incidentId,
-        userId: normalizeActorUuid(userId),
+        userId: validUserId,
         comment,
       },
     });

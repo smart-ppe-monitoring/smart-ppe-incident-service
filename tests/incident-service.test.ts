@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import jwt from "jsonwebtoken";
@@ -26,7 +28,14 @@ import {
   createEvidenceSchema,
 } from "../src/modules/incident/incident.validation";
 import { IncidentService } from "../src/modules/incident/incident.service";
-import { IncidentRepository, serializeEvidence, serializeIncident } from "../src/modules/incident/incident.repository";
+import {
+  IncidentRepository,
+  serializeEvidence,
+  serializeIncident,
+  normalizeActorUuid,
+  SYSTEM_ACTOR_UUID,
+} from "../src/modules/incident/incident.repository";
+import { parseTrustProxy } from "../src/config/env.config";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
@@ -634,8 +643,8 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
     });
   });
 
-  // ── 7. Security Patches: SEC-01 to SEC-04 ─────────────────────────────────
-  describe("7. Security Patches: SEC-01 to SEC-04", () => {
+  // ── 7. Security Patches: SEC-01 to SEC-08 ─────────────────────────────────
+  describe("7. Security Patches: SEC-01 to SEC-08", () => {
     describe("SEC-01: 2FA Purpose Isolation in Auth Middleware", () => {
       it("should reject token with purpose 2FA_VERIFICATION", () => {
         mock.method(jwt, "decode", () => ({
@@ -1066,6 +1075,170 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
             return true;
           },
         );
+      });
+    });
+
+    // ── SEC-05: Dockerfile Runner Stage Public Key and Lockfile Pinning ───────
+    describe("SEC-05: Dockerfile Runner Stage Public Key and Lockfile Pinning", () => {
+      it("should ensure public.key.pem and pnpm-lock.yaml exist for container build", () => {
+        const keyPath = path.resolve(__dirname, "../keys/public.key.pem");
+        const lockPath = path.resolve(__dirname, "../pnpm-lock.yaml");
+        const dockerfilePath = path.resolve(__dirname, "../Dockerfile");
+
+        assert.ok(fs.existsSync(keyPath), "keys/public.key.pem must exist");
+        assert.ok(fs.existsSync(lockPath), "pnpm-lock.yaml must exist");
+
+        const dockerfileContent = fs.readFileSync(dockerfilePath, "utf-8");
+        assert.ok(
+          dockerfileContent.includes("COPY package.json pnpm-lock.yaml* ./"),
+          "Dockerfile Stage 1 must copy pnpm-lock.yaml",
+        );
+        assert.ok(
+          dockerfileContent.includes("COPY --from=builder /app/keys ./keys"),
+          "Dockerfile Stage 3 must copy keys/ into runner stage",
+        );
+      });
+    });
+
+    // ── SEC-06: Enforcement of mustChangePassword Flag in Satellite Auth ─────
+    describe("SEC-06: Enforcement of mustChangePassword Flag in Satellite Auth", () => {
+      it("should reject access with 403 FORBIDDEN when token contains mustChangePassword: true", () => {
+        mock.method(jwt, "decode", () => ({
+          header: { alg: "RS256" },
+          payload: {},
+        }));
+        mock.method(jwt, "verify", () => ({
+          sub: "usr-temp-pwd-1",
+          email: "user@test.com",
+          role: ROLES.SAFETY_OFFICER,
+          purpose: JWT_PURPOSE.ACCESS,
+          mustChangePassword: true,
+        }));
+
+        let capturedError: any = null;
+        const req: any = {
+          headers: { authorization: "Bearer token-must-change-password" },
+        };
+
+        authMiddleware(req, {} as any, (err?: any) => {
+          capturedError = err;
+        });
+
+        assert.ok(capturedError instanceof AppError);
+        assert.strictEqual(capturedError.statusCode, 403);
+        assert.strictEqual(capturedError.code, ERROR_CODE.FORBIDDEN);
+        assert.ok(capturedError.message.includes("đổi mật khẩu"));
+      });
+
+      it("should permit access when token contains mustChangePassword: false", () => {
+        mock.method(jwt, "decode", () => ({
+          header: { alg: "RS256" },
+          payload: {},
+        }));
+        mock.method(jwt, "verify", () => ({
+          sub: "usr-normal-pwd-1",
+          email: "normal@test.com",
+          role: ROLES.SAFETY_OFFICER,
+          purpose: JWT_PURPOSE.ACCESS,
+          mustChangePassword: false,
+        }));
+
+        let capturedError: any = null;
+        const req: any = {
+          headers: { authorization: "Bearer valid-normal-token" },
+        };
+
+        authMiddleware(req, {} as any, (err?: any) => {
+          capturedError = err;
+        });
+
+        assert.strictEqual(capturedError, undefined);
+        assert.strictEqual(req.user?.id, "usr-normal-pwd-1");
+      });
+    });
+
+    // ── SEC-07: Strict Actor ID Validation & Anti-System Coercion ────────────
+    describe("SEC-07: Strict Actor ID Validation & Anti-System Coercion", () => {
+      it("should throw VALIDATION_ERROR when an invalid actorId is provided without fallback", () => {
+        assert.throws(
+          () => normalizeActorUuid("invalid-uuid-string", false),
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            return true;
+          },
+        );
+      });
+
+      it("should throw VALIDATION_ERROR when an invalid actorId is provided even if fallback is allowed", () => {
+        assert.throws(
+          () => normalizeActorUuid("malformed-actor-id", true),
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            return true;
+          },
+        );
+      });
+
+      it("should throw VALIDATION_ERROR when actorId is missing and fallback is disallowed", () => {
+        assert.throws(
+          () => normalizeActorUuid(undefined, false),
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            return true;
+          },
+        );
+      });
+
+      it("should return SYSTEM_ACTOR_UUID when actorId is empty and fallback is explicitly allowed", () => {
+        assert.strictEqual(normalizeActorUuid(undefined, true), SYSTEM_ACTOR_UUID);
+        assert.strictEqual(normalizeActorUuid(null, true), SYSTEM_ACTOR_UUID);
+        assert.strictEqual(normalizeActorUuid("", true), SYSTEM_ACTOR_UUID);
+      });
+
+      it("should return valid UUID unchanged", () => {
+        const validId = "11111111-1111-4111-8111-111111111111";
+        assert.strictEqual(normalizeActorUuid(validId, false), validId);
+      });
+
+      it("should safely return false in isUserAssignedToIncident when given an invalid non-UUID userId", async () => {
+        const repo = new IncidentRepository({} as any);
+        const result = await repo.isUserAssignedToIncident("inc-1", "invalid-actor-id");
+        assert.strictEqual(result, false);
+      });
+
+      it("should reject repository.addComment when given an invalid actorId", async () => {
+        const repo = new IncidentRepository({} as any);
+        await assert.rejects(
+          async () => {
+            await repo.addComment("inc-1", "not-a-uuid", "test comment");
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 400);
+            assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+            return true;
+          },
+        );
+      });
+    });
+
+    // ── SEC-08: Trust Proxy Single Hop Configuration ─────────────────────────
+    describe("SEC-08: Trust Proxy Single Hop Configuration", () => {
+      it("should resolve 'true' to 1 hop (Traefik Ingress) instead of boolean true to prevent IP spoofing", () => {
+        const result = parseTrustProxy("true");
+        assert.strictEqual(result, 1);
+      });
+
+      it("should preserve 'false', numeric hops, and custom subnet lists", () => {
+        assert.strictEqual(parseTrustProxy("false"), false);
+        assert.strictEqual(parseTrustProxy("2"), 2);
+        assert.deepStrictEqual(parseTrustProxy("10.0.0.1, 10.0.0.2"), ["10.0.0.1", "10.0.0.2"]);
       });
     });
   });
