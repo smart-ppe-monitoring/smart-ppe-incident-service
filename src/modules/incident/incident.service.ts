@@ -359,7 +359,11 @@ export class IncidentService {
     });
   }
 
-  async getEvidenceById(id: string, actorId?: string) {
+  async getEvidenceById(
+    id: string,
+    actorId?: string,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+  ) {
     const evidence = await this.repository.findEvidenceById(id);
     if (!evidence) {
       throw new AppError(
@@ -367,6 +371,31 @@ export class IncidentService {
         404,
         ERROR_CODE.EVIDENCE_NOT_FOUND,
       );
+    }
+
+    // SEC-09: Kiểm tra quyền sở hữu công trường (Site-level Ownership / BOLA guard)
+    if (userContext && evidence.incident?.siteId) {
+      const isAdmin =
+        userContext.role === ROLES.ADMIN ||
+        userContext.role === "ADMIN";
+
+      if (!isAdmin) {
+        const allowedSiteIds = [
+          ...(userContext.siteId ? [userContext.siteId] : []),
+          ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
+        ];
+
+        if (
+          allowedSiteIds.length > 0 &&
+          !allowedSiteIds.includes(evidence.incident.siteId)
+        ) {
+          throw new AppError(
+            "Bạn không có quyền truy cập hoặc tải bằng chứng thuộc công trường này",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+      }
     }
 
     if (actorId) {
@@ -527,9 +556,10 @@ export class IncidentService {
     actorId?: string,
     expiresInSeconds: number = 3600,
     action: EvidenceAccessAction = EVIDENCE_ACCESS_ACTION.DOWNLOAD,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
   ): Promise<EvidenceDownloadUrlResponseDto> {
-    // 1. Chỉ tìm bằng chứng, không truyền actorId vào getEvidenceById để tránh ghi log VIEW kép
-    const evidence = await this.getEvidenceById(evidenceId);
+    // 1. Chỉ tìm bằng chứng và kiểm tra quyền công trường, không truyền actorId vào getEvidenceById để tránh ghi log VIEW kép
+    const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
 
     // 2. Sinh presigned URL với content-disposition tương ứng (inline vs attachment)
     const downloadUrl = await this.storage.getPresignedDownloadUrl(
@@ -569,8 +599,9 @@ export class IncidentService {
    */
   async verifyEvidenceIntegrity(
     evidenceId: string,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
   ): Promise<VerifyEvidenceChecksumResponseDto> {
-    const evidence = await this.getEvidenceById(evidenceId);
+    const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
     const expectedChecksum = evidence.metadata?.checksum;
 
     if (!expectedChecksum) {

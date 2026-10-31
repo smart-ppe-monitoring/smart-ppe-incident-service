@@ -89,100 +89,145 @@ export class IncidentRepository {
 
   // ── Incident CRUD & Lifecycle ──────────────────────────────────────────────
   async createIncident(data: CreateIncidentDto, actorId: string) {
-    return this.db.$transaction(
-      async (tx: any) => {
-        // Phòng thủ cấp CSDL (Task BE-13): Nếu violationId đã tồn tại trong DB, tái sử dụng bản ghi cũ
-        if (data.violationId) {
-          const existing = await tx.incident.findFirst({
-            where: { violationId: data.violationId },
+    try {
+      return await this.db.$transaction(
+        async (tx: any) => {
+          // Phòng thủ cấp CSDL (Task BE-13): Nếu violationId đã tồn tại trong DB, tái sử dụng bản ghi cũ
+          if (data.violationId) {
+            const existing = await tx.incident.findFirst({
+              where: { violationId: data.violationId },
+              include: {
+                evidences: { include: { metadata: true } },
+                statusHistory: { orderBy: { changedAt: "desc" } },
+                assignments: true,
+                comments: true,
+              },
+            });
+            if (existing) {
+              return serializeIncident(existing);
+            }
+          }
+
+          const initialStatus = data.status || INCIDENT_STATUS.PENDING_REVIEW;
+
+          const incident = await tx.incident.create({
+            data: {
+              siteId: data.siteId,
+              cameraId: data.cameraId,
+              violationId: data.violationId || null,
+              violationType: data.violationType,
+              severity: data.severity || "HIGH",
+              status: initialStatus,
+              detectedAt: new Date(data.detectedAt),
+              description: data.description || null,
+            },
+          });
+
+          // Ghi lại bản ghi khởi tạo trạng thái đầu tiên (cho phép System actor nếu không có actorId)
+          const validActorId = normalizeActorUuid(actorId, true);
+          await tx.incidentStatusHistory.create({
+            data: {
+              incidentId: incident.id,
+              oldStatus: "INITIAL",
+              newStatus: initialStatus,
+              changedBy: validActorId,
+              reason: "Hệ thống ghi nhận sự cố vi phạm PPE mới",
+            },
+          });
+
+          // Nếu có bằng chứng ban đầu (ảnh/video chụp từ camera AI)
+          if (data.initialEvidence) {
+            const ev = data.initialEvidence;
+            const evidence = await tx.evidence.create({
+              data: {
+                incidentId: incident.id,
+                cameraId: ev.cameraId || data.cameraId,
+                evidenceType: ev.evidenceType,
+                storageKey: ev.storageKey,
+                fileName: ev.fileName,
+                mimeType: ev.mimeType,
+                fileSize: ev.fileSize ? BigInt(ev.fileSize) : BigInt(0),
+                capturedAt: new Date(ev.capturedAt),
+              },
+            });
+
+            if (ev.metadata) {
+              await tx.evidenceMetadata.create({
+                data: {
+                  evidenceId: evidence.id,
+                  width: ev.metadata.width ?? null,
+                  height: ev.metadata.height ?? null,
+                  durationSeconds: ev.metadata.durationSeconds ?? null,
+                  frameRate: ev.metadata.frameRate ?? null,
+                  checksum: ev.metadata.checksum ?? null,
+                  aiDetections: ev.metadata.aiDetections ?? undefined,
+                },
+              });
+            }
+          }
+
+          // SEC-11: Ghi nhận sự kiện ppe.incident.created vào Transactional Outbox
+          if (typeof tx.outboxEvent?.create === "function") {
+            await tx.outboxEvent.create({
+              data: {
+                eventType: "ppe.incident.created",
+                aggregateId: incident.id,
+                payload: {
+                  incidentId: incident.id,
+                  siteId: incident.siteId,
+                  cameraId: incident.cameraId,
+                  violationType: incident.violationType,
+                  severity: incident.severity,
+                  status: initialStatus,
+                  detectedAt: incident.detectedAt.toISOString(),
+                  timestamp: new Date().toISOString(),
+                },
+                status: "PENDING",
+              },
+            });
+          }
+
+          const created = await tx.incident.findUnique({
+            where: { id: incident.id },
             include: {
-              evidences: { include: { metadata: true } },
-              statusHistory: { orderBy: { changedAt: "desc" } },
+              evidences: {
+                include: { metadata: true },
+              },
+              statusHistory: {
+                orderBy: { changedAt: "desc" },
+              },
               assignments: true,
               comments: true,
             },
           });
-          if (existing) {
-            return serializeIncident(existing);
-          }
-        }
 
-        const initialStatus = data.status || INCIDENT_STATUS.PENDING_REVIEW;
-
-        const incident = await tx.incident.create({
-          data: {
-            siteId: data.siteId,
-            cameraId: data.cameraId,
-            violationId: data.violationId || null,
-            violationType: data.violationType,
-            severity: data.severity || "HIGH",
-            status: initialStatus,
-            detectedAt: new Date(data.detectedAt),
-            description: data.description || null,
-          },
-        });
-
-        // Ghi lại bản ghi khởi tạo trạng thái đầu tiên (cho phép System actor nếu không có actorId)
-        const validActorId = normalizeActorUuid(actorId, true);
-        await tx.incidentStatusHistory.create({
-          data: {
-            incidentId: incident.id,
-            oldStatus: "INITIAL",
-            newStatus: initialStatus,
-            changedBy: validActorId,
-            reason: "Hệ thống ghi nhận sự cố vi phạm PPE mới",
-          },
-        });
-
-        // Nếu có bằng chứng ban đầu (ảnh/video chụp từ camera AI)
-        if (data.initialEvidence) {
-          const ev = data.initialEvidence;
-          const evidence = await tx.evidence.create({
-            data: {
-              incidentId: incident.id,
-              cameraId: ev.cameraId || data.cameraId,
-              evidenceType: ev.evidenceType,
-              storageKey: ev.storageKey,
-              fileName: ev.fileName,
-              mimeType: ev.mimeType,
-              fileSize: ev.fileSize ? BigInt(ev.fileSize) : BigInt(0),
-              capturedAt: new Date(ev.capturedAt),
-            },
-          });
-
-          if (ev.metadata) {
-            await tx.evidenceMetadata.create({
-              data: {
-                evidenceId: evidence.id,
-                width: ev.metadata.width ?? null,
-                height: ev.metadata.height ?? null,
-                durationSeconds: ev.metadata.durationSeconds ?? null,
-                frameRate: ev.metadata.frameRate ?? null,
-                checksum: ev.metadata.checksum ?? null,
-                aiDetections: ev.metadata.aiDetections ?? undefined,
-              },
-            });
-          }
-        }
-
-        const created = await tx.incident.findUnique({
-          where: { id: incident.id },
+          return serializeIncident(created);
+        },
+        DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+      );
+    } catch (error: any) {
+      // SEC-10: Phòng thủ Race Condition khi 2 luồng đồng thời ghi nhận cùng một violationId
+      if (
+        data.violationId &&
+        (error?.code === "P2002" ||
+          error?.message?.includes("violation_id") ||
+          error?.message?.includes("violationId"))
+      ) {
+        const existing = await this.db.incident.findFirst({
+          where: { violationId: data.violationId },
           include: {
-            evidences: {
-              include: { metadata: true },
-            },
-            statusHistory: {
-              orderBy: { changedAt: "desc" },
-            },
+            evidences: { include: { metadata: true } },
+            statusHistory: { orderBy: { changedAt: "desc" } },
             assignments: true,
             comments: true,
           },
         });
-
-        return serializeIncident(created);
-      },
-      DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
-    );
+        if (existing) {
+          return serializeIncident(existing);
+        }
+      }
+      throw error;
+    }
   }
 
   async findIncidentById(id: string) {
@@ -482,6 +527,32 @@ export class IncidentRepository {
             reason: params.reason || null,
           },
         });
+
+        // SEC-11: Ghi nhận sự kiện vào Transactional Outbox trong cùng transaction để đảm bảo Zero-Message-Loss
+        if (typeof tx.outboxEvent?.create === "function") {
+          const eventType =
+            params.newStatus === INCIDENT_STATUS.RESOLVED
+              ? "ppe.incident.resolved"
+              : "ppe.incident.status_changed";
+
+          await tx.outboxEvent.create({
+            data: {
+              eventType,
+              aggregateId: params.incidentId,
+              payload: {
+                incidentId: params.incidentId,
+                siteId: incident.siteId,
+                oldStatus: params.oldStatus,
+                newStatus: params.newStatus,
+                changedBy: validActorId,
+                reason: params.reason || null,
+                resolvedAt: params.resolvedAt ? params.resolvedAt.toISOString() : null,
+                timestamp: new Date().toISOString(),
+              },
+              status: "PENDING",
+            },
+          });
+        }
 
         const reloaded = await tx.incident.findUnique({
           where: { id: params.incidentId },

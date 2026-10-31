@@ -10,6 +10,7 @@ import {
   EVIDENCE_TYPE,
   ASSIGNMENT_STATUS,
   VALID_INCIDENT_TRANSITIONS,
+  EVIDENCE_ACCESS_ACTION,
 } from "../src/common/constants/incident.constant";
 import { ROLES } from "../src/common/constants/role.constant";
 import { JWT_PURPOSE } from "../src/common/constants/jwt.constant";
@@ -643,8 +644,8 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
     });
   });
 
-  // ── 7. Security Patches: SEC-01 to SEC-08 ─────────────────────────────────
-  describe("7. Security Patches: SEC-01 to SEC-08", () => {
+  // ── 7. Security Patches: SEC-01 to SEC-11 ─────────────────────────────────
+  describe("7. Security Patches: SEC-01 to SEC-11", () => {
     describe("SEC-01: 2FA Purpose Isolation in Auth Middleware", () => {
       it("should reject token with purpose 2FA_VERIFICATION", () => {
         mock.method(jwt, "decode", () => ({
@@ -1239,6 +1240,293 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
         assert.strictEqual(parseTrustProxy("false"), false);
         assert.strictEqual(parseTrustProxy("2"), 2);
         assert.deepStrictEqual(parseTrustProxy("10.0.0.1, 10.0.0.2"), ["10.0.0.1", "10.0.0.2"]);
+      });
+    });
+
+    // ── SEC-09: Evidence Download & Integrity Site-Level Scoping (BOLA) ──────
+    describe("SEC-09: Evidence Download & Integrity Site-Level Scoping (BOLA)", () => {
+      const siteA = "11111111-1111-4111-8111-111111111111";
+      const siteB = "22222222-2222-4222-8222-222222222222";
+      const evidenceId = "33333333-3333-4333-8333-333333333333";
+
+      it("should reject getEvidenceDownloadUrl with 403 FORBIDDEN when user site does not match evidence site", async () => {
+        const mockRepo = {
+          findEvidenceById: mock.fn(async (id: string) => ({
+            id,
+            storageKey: `evidences/${siteB}/cam-1/2026/10/31/inc-1/snap.jpg`,
+            fileName: "snap.jpg",
+            mimeType: "image/jpeg",
+            incident: { id: "inc-1", siteId: siteB },
+          })),
+        } as any;
+        const mockStorage = {
+          getPresignedDownloadUrl: mock.fn(async () => "https://s3/download-url"),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+
+        await assert.rejects(
+          async () => {
+            await service.getEvidenceDownloadUrl(
+              evidenceId,
+              "usr-officer-1",
+              900,
+              EVIDENCE_ACCESS_ACTION.VIEW,
+              { role: ROLES.SAFETY_OFFICER, siteId: siteA },
+            );
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 403);
+            assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+            assert.ok(err.message.includes("công trường"));
+            return true;
+          },
+        );
+      });
+
+      it("should permit getEvidenceDownloadUrl when user site matches evidence site", async () => {
+        const mockRepo = {
+          findEvidenceById: mock.fn(async (id: string) => ({
+            id,
+            storageKey: `evidences/${siteA}/cam-1/2026/10/31/inc-1/snap.jpg`,
+            fileName: "snap.jpg",
+            mimeType: "image/jpeg",
+            incident: { id: "inc-1", siteId: siteA },
+          })),
+          logEvidenceAccess: mock.fn(async () => {}),
+        } as any;
+        const mockStorage = {
+          getPresignedDownloadUrl: mock.fn(async () => "https://s3/download-url"),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+        const result = await service.getEvidenceDownloadUrl(
+          evidenceId,
+          "usr-officer-1",
+          900,
+          EVIDENCE_ACCESS_ACTION.DOWNLOAD,
+          { role: ROLES.SAFETY_OFFICER, siteId: siteA },
+        );
+
+        assert.strictEqual(result.downloadUrl, "https://s3/download-url");
+        assert.strictEqual(mockStorage.getPresignedDownloadUrl.mock.callCount(), 1);
+      });
+
+      it("should permit getEvidenceDownloadUrl for ADMIN regardless of site", async () => {
+        const mockRepo = {
+          findEvidenceById: mock.fn(async (id: string) => ({
+            id,
+            storageKey: `evidences/${siteB}/cam-1/2026/10/31/inc-1/snap.jpg`,
+            fileName: "snap.jpg",
+            mimeType: "image/jpeg",
+            incident: { id: "inc-1", siteId: siteB },
+          })),
+          logEvidenceAccess: mock.fn(async () => {}),
+        } as any;
+        const mockStorage = {
+          getPresignedDownloadUrl: mock.fn(async () => "https://s3/admin-url"),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+        const result = await service.getEvidenceDownloadUrl(
+          evidenceId,
+          "usr-admin-1",
+          900,
+          EVIDENCE_ACCESS_ACTION.VIEW,
+          { role: ROLES.ADMIN, siteId: siteA },
+        );
+
+        assert.strictEqual(result.downloadUrl, "https://s3/admin-url");
+      });
+
+      it("should reject verifyEvidenceIntegrity with 403 FORBIDDEN when user site does not match evidence site", async () => {
+        const mockRepo = {
+          findEvidenceById: mock.fn(async (id: string) => ({
+            id,
+            storageKey: `evidences/${siteB}/cam-1/2026/10/31/inc-1/snap.jpg`,
+            metadata: { checksum: "abc123sha" },
+            incident: { id: "inc-1", siteId: siteB },
+          })),
+        } as any;
+        const mockStorage = {
+          verifyChecksum: mock.fn(),
+        } as any;
+
+        const service = new IncidentService(mockRepo, mockStorage);
+
+        await assert.rejects(
+          async () => {
+            await service.verifyEvidenceIntegrity(evidenceId, {
+              role: ROLES.SAFETY_OFFICER,
+              siteId: siteA,
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof AppError);
+            assert.strictEqual(err.statusCode, 403);
+            assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+            return true;
+          },
+        );
+      });
+    });
+
+    // ── SEC-10: Violation ID Unique Constraint & Concurrent Deduplication ────
+    describe("SEC-10: Violation ID Unique Constraint & Concurrent Deduplication", () => {
+      it("should define @unique on violationId in schema.prisma", () => {
+        const schemaPath = path.resolve(__dirname, "../prisma/schema.prisma");
+        const schemaContent = fs.readFileSync(schemaPath, "utf-8");
+        assert.ok(
+          schemaContent.includes('violationId   String?   @unique @map("violation_id")'),
+          "violationId must have @unique constraint in prisma/schema.prisma",
+        );
+      });
+
+      it("should gracefully recover from P2002 race condition by returning existing incident", async () => {
+        const violationId = "44444444-4444-4444-8444-444444444444";
+        const existingIncident = {
+          id: "inc-race-winner-1",
+          siteId: "11111111-1111-4111-8111-111111111111",
+          cameraId: "22222222-2222-4222-8222-222222222222",
+          violationId,
+          violationType: VIOLATION_TYPE.NO_HELMET,
+          status: INCIDENT_STATUS.PENDING_REVIEW,
+          evidences: [],
+          statusHistory: [],
+        };
+
+        const mockPrismaClient = {
+          $transaction: mock.fn(async () => {
+            const p2002Err: any = new Error("Unique constraint failed on the fields: (`violation_id`)");
+            p2002Err.code = "P2002";
+            throw p2002Err;
+          }),
+          incident: {
+            findFirst: mock.fn(async () => existingIncident),
+          },
+        };
+
+        const repo = new IncidentRepository(mockPrismaClient);
+        const result = await repo.createIncident(
+          {
+            siteId: "11111111-1111-4111-8111-111111111111",
+            cameraId: "22222222-2222-4222-8222-222222222222",
+            violationId,
+            violationType: VIOLATION_TYPE.NO_HELMET,
+            detectedAt: new Date(),
+          },
+          "usr-11111111-1111-4111-8111-111111111111",
+        );
+
+        assert.strictEqual(result.id, "inc-race-winner-1");
+        assert.strictEqual(result.violationId, violationId);
+      });
+    });
+
+    // ── SEC-11: Transactional Outbox Pattern in Incident Lifecycle Transitions
+    describe("SEC-11: Transactional Outbox Pattern in Incident Lifecycle Transitions", () => {
+      it("should define OutboxEvent model in schema.prisma", () => {
+        const schemaPath = path.resolve(__dirname, "../prisma/schema.prisma");
+        const schemaContent = fs.readFileSync(schemaPath, "utf-8");
+        assert.ok(
+          schemaContent.includes("model OutboxEvent {"),
+          "schema.prisma must declare model OutboxEvent",
+        );
+        assert.ok(
+          schemaContent.includes('@@map("outbox_events")'),
+          "OutboxEvent must map to outbox_events table",
+        );
+      });
+
+      it("should persist outbox record during status transition transaction", async () => {
+        let createdOutboxEvent: any = null;
+        const incidentId = "55555555-5555-4555-8555-555555555555";
+        const actorId = "66666666-6666-4666-8666-666666666666";
+
+        const mockTx = {
+          incident: {
+            update: mock.fn(async () => ({ id: incidentId, siteId: "site-1" })),
+            findUnique: mock.fn(async () => ({
+              id: incidentId,
+              status: INCIDENT_STATUS.CONFIRMED,
+              statusHistory: [],
+            })),
+          },
+          incidentStatusHistory: {
+            create: mock.fn(async () => ({ id: "hist-1" })),
+          },
+          outboxEvent: {
+            create: mock.fn(async (params: any) => {
+              createdOutboxEvent = params.data;
+              return { id: "outbox-1", ...params.data };
+            }),
+          },
+        };
+
+        const mockPrisma = {
+          $transaction: mock.fn(async (callback: any) => callback(mockTx)),
+        };
+
+        const repo = new IncidentRepository(mockPrisma);
+        await repo.transitionStatus({
+          incidentId,
+          oldStatus: INCIDENT_STATUS.PENDING_REVIEW,
+          newStatus: INCIDENT_STATUS.CONFIRMED,
+          changedBy: actorId,
+          reason: "Confirmed PPE violation",
+        });
+
+        assert.ok(createdOutboxEvent !== null);
+        assert.strictEqual(createdOutboxEvent.eventType, "ppe.incident.status_changed");
+        assert.strictEqual(createdOutboxEvent.aggregateId, incidentId);
+        assert.strictEqual(createdOutboxEvent.status, "PENDING");
+        assert.strictEqual(createdOutboxEvent.payload.newStatus, INCIDENT_STATUS.CONFIRMED);
+        assert.strictEqual(createdOutboxEvent.payload.oldStatus, INCIDENT_STATUS.PENDING_REVIEW);
+      });
+
+      it("should persist ppe.incident.resolved outbox record when transitioning to RESOLVED", async () => {
+        let createdOutboxEvent: any = null;
+        const incidentId = "55555555-5555-4555-8555-555555555555";
+        const actorId = "66666666-6666-4666-8666-666666666666";
+
+        const mockTx = {
+          incident: {
+            update: mock.fn(async () => ({ id: incidentId, siteId: "site-1" })),
+            findUnique: mock.fn(async () => ({
+              id: incidentId,
+              status: INCIDENT_STATUS.RESOLVED,
+              statusHistory: [],
+            })),
+          },
+          incidentStatusHistory: {
+            create: mock.fn(async () => ({ id: "hist-1" })),
+          },
+          outboxEvent: {
+            create: mock.fn(async (params: any) => {
+              createdOutboxEvent = params.data;
+              return { id: "outbox-2", ...params.data };
+            }),
+          },
+        };
+
+        const mockPrisma = {
+          $transaction: mock.fn(async (callback: any) => callback(mockTx)),
+        };
+
+        const repo = new IncidentRepository(mockPrisma);
+        await repo.transitionStatus({
+          incidentId,
+          oldStatus: INCIDENT_STATUS.CONFIRMED,
+          newStatus: INCIDENT_STATUS.RESOLVED,
+          changedBy: actorId,
+          reason: "Resolution note",
+          resolvedAt: new Date(),
+        });
+
+        assert.ok(createdOutboxEvent !== null);
+        assert.strictEqual(createdOutboxEvent.eventType, "ppe.incident.resolved");
+        assert.strictEqual(createdOutboxEvent.payload.newStatus, INCIDENT_STATUS.RESOLVED);
       });
     });
   });

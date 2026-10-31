@@ -136,6 +136,10 @@ export async function authMiddleware(
       email: payload.email,
       role: payload.role,
       roleId: payload.roleId,
+      siteId: typeof jwtPayload.siteId === "string" ? jwtPayload.siteId : undefined,
+      siteIds: Array.isArray(jwtPayload.siteIds)
+        ? (jwtPayload.siteIds as string[])
+        : undefined,
       permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
     };
 
