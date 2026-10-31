@@ -18,7 +18,17 @@ import {
   requirePermission,
   requireAnyPermission,
 } from "../src/middlewares/permission.middleware";
-import { authMiddleware } from "../src/middlewares/auth.middleware";
+import {
+  authMiddleware,
+  extractTokenFromRequest,
+} from "../src/middlewares/auth.middleware";
+import {
+  requireGatewayOrigin,
+  createRequireGatewayOrigin,
+} from "../src/middlewares/request-id.middleware";
+import { maintenanceGuard } from "../src/middlewares/maintenance.middleware";
+import { MEDIA_LIMITS } from "../src/common/constants/media.constant";
+import { GATEWAY_HEADERS } from "../src/common/constants/gateway.constant";
 import {
   createIncidentSchema,
   updateIncidentSchema,
@@ -644,8 +654,8 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
     });
   });
 
-  // ── 7. Security Patches: SEC-01 to SEC-11 ─────────────────────────────────
-  describe("7. Security Patches: SEC-01 to SEC-11", () => {
+  // ── 7. Security Patches: SEC-01 to SEC-16 ─────────────────────────────────
+  describe("7. Security Patches: SEC-01 to SEC-16", () => {
     describe("SEC-01: 2FA Purpose Isolation in Auth Middleware", () => {
       it("should reject token with purpose 2FA_VERIFICATION", () => {
         mock.method(jwt, "decode", () => ({
@@ -1527,6 +1537,265 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
         assert.ok(createdOutboxEvent !== null);
         assert.strictEqual(createdOutboxEvent.eventType, "ppe.incident.resolved");
         assert.strictEqual(createdOutboxEvent.payload.newStatus, INCIDENT_STATUS.RESOLVED);
+      });
+    });
+
+    // ── SEC-12: requireGatewayOrigin Enforcement on Route Pipeline ───────────
+    describe("SEC-12: requireGatewayOrigin Enforcement on Route Pipeline", () => {
+      const configuredSecret = "internal-gateway-secret-test-1234567890";
+
+      it("should reject request when GATEWAY_INTERNAL_SECRET is configured and header is missing", () => {
+        const middleware = createRequireGatewayOrigin(configuredSecret);
+        const req: any = { headers: {} };
+        let caughtError: any = null;
+
+        middleware(req, {} as any, (err?: any) => {
+          caughtError = err;
+        });
+
+        assert.ok(caughtError instanceof AppError);
+        assert.strictEqual(caughtError.statusCode, 403);
+        assert.strictEqual(caughtError.code, ERROR_CODE.GATEWAY_REQUIRED);
+      });
+
+      it("should reject request when header x-gateway-secret does not match configured secret", () => {
+        const middleware = createRequireGatewayOrigin(configuredSecret);
+        const req: any = {
+          headers: {
+            [GATEWAY_HEADERS.INTERNAL_SECRET]: "wrong-secret-value",
+          },
+        };
+        let caughtError: any = null;
+
+        middleware(req, {} as any, (err?: any) => {
+          caughtError = err;
+        });
+
+        assert.ok(caughtError instanceof AppError);
+        assert.strictEqual(caughtError.statusCode, 403);
+        assert.strictEqual(caughtError.code, ERROR_CODE.GATEWAY_REQUIRED);
+      });
+
+      it("should permit request when header x-gateway-secret matches configured secret", () => {
+        const middleware = createRequireGatewayOrigin(configuredSecret);
+        const req: any = {
+          headers: {
+            [GATEWAY_HEADERS.INTERNAL_SECRET]: configuredSecret,
+          },
+        };
+        let called = false;
+        let caughtError: any = null;
+
+        middleware(req, {} as any, (err?: any) => {
+          called = true;
+          caughtError = err;
+        });
+
+        assert.strictEqual(called, true);
+        assert.strictEqual(caughtError, undefined);
+      });
+
+      it("should bypass check when secret is not configured (monolith / local dev mode)", () => {
+        const middleware = createRequireGatewayOrigin("");
+        const req: any = { headers: {} };
+        let called = false;
+
+        middleware(req, {} as any, () => {
+          called = true;
+        });
+
+        assert.strictEqual(called, true);
+      });
+    });
+
+    // ── SEC-13: PostgreSQL FTS tsquery Syntax Error Handling & Fallback ──────
+    describe("SEC-13: PostgreSQL FTS tsquery Syntax Error Handling & Fallback", () => {
+      it("should fallback to findAllIncidents when to_tsquery throws syntax error", async () => {
+        const fallbackResults = {
+          data: [
+            {
+              id: "99999999-9999-4999-8999-999999999999",
+              siteId: "site-1",
+              status: INCIDENT_STATUS.CONFIRMED,
+              violationType: VIOLATION_TYPE.NO_HELMET,
+            },
+          ],
+          meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        };
+
+        const mockDb = {
+          $queryRaw: mock.fn(async () => {
+            throw new Error('syntax error in tsquery: "& | !" (code: 42601)');
+          }),
+        };
+
+        const repo = new IncidentRepository(mockDb as any);
+        repo.findAllIncidents = mock.fn(async (_query: any) => fallbackResults as any);
+
+        const result = await repo.searchFts({
+          search: "& | ! syntax_bomb",
+          page: 1,
+          limit: 20,
+        });
+
+        assert.strictEqual(result.data.length, 1);
+        assert.strictEqual(result.data[0].id, "99999999-9999-4999-8999-999999999999");
+        assert.strictEqual((repo.findAllIncidents as any).mock.callCount(), 1);
+      });
+    });
+
+    // ── SEC-14: Direct Multipart Upload Size Bound & Event Loop Protection ────
+    describe("SEC-14: Direct Multipart Upload Size Bound & Event Loop Protection", () => {
+      it("should define MAX_DIRECT_UPLOAD_BYTES as 5MB to prevent heap starvation", () => {
+        assert.strictEqual(MEDIA_LIMITS.MAX_DIRECT_UPLOAD_BYTES, 5 * 1024 * 1024);
+        assert.ok(MEDIA_LIMITS.MAX_DIRECT_UPLOAD_BYTES < MEDIA_LIMITS.MAX_FILE_SIZE_BYTES);
+      });
+    });
+
+    // ── SEC-15: Maintenance Guard Verification with Dynamic Activation & Admin Bypass ──
+    describe("SEC-15: Maintenance Guard Verification with Dynamic Activation & Admin Bypass", () => {
+      it("should allow request when maintenance mode is inactive", async () => {
+        const guard = maintenanceGuard({ isMaintenanceMode: false });
+        const req: any = { url: "/api/v1/incidents" };
+        let called = false;
+        let caughtError: any = null;
+
+        await guard(req, {} as any, (err?: any) => {
+          called = true;
+          caughtError = err;
+        });
+
+        assert.strictEqual(called, true);
+        assert.strictEqual(caughtError, undefined);
+      });
+
+      it("should reject regular user with 503 SYSTEM_MAINTENANCE when maintenance mode is active", async () => {
+        const guard = maintenanceGuard({ isMaintenanceMode: true });
+        const req: any = {
+          originalUrl: "/api/v1/incidents",
+          user: {
+            id: "user-1",
+            role: ROLES.SAFETY_OFFICER,
+            permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+          },
+        };
+        let caughtError: any = null;
+
+        await guard(req, {} as any, (err?: any) => {
+          caughtError = err;
+        });
+
+        assert.ok(caughtError instanceof AppError);
+        assert.strictEqual(caughtError.statusCode, 503);
+        assert.strictEqual(caughtError.code, ERROR_CODE.SYSTEM_MAINTENANCE);
+      });
+
+      it("should permit health check and openapi routes during maintenance mode", async () => {
+        const guard = maintenanceGuard({ isMaintenanceMode: true });
+        const reqHealth: any = { originalUrl: "/api/v1/incidents/health" };
+        let healthCalled = false;
+        await guard(reqHealth, {} as any, () => {
+          healthCalled = true;
+        });
+        assert.strictEqual(healthCalled, true);
+
+        const reqOpenApi: any = { originalUrl: "/api/v1/incidents/openapi.json" };
+        let openApiCalled = false;
+        await guard(reqOpenApi, {} as any, () => {
+          openApiCalled = true;
+        });
+        assert.strictEqual(openApiCalled, true);
+      });
+
+      it("should permit Admin or MAINTENANCE_BYPASS users during maintenance mode", async () => {
+        const guard = maintenanceGuard({ isMaintenanceMode: true });
+        const reqAdmin: any = {
+          originalUrl: "/api/v1/incidents",
+          user: {
+            id: "admin-1",
+            role: ROLES.ADMIN,
+            permissions: [],
+          },
+        };
+        let adminCalled = false;
+        await guard(reqAdmin, {} as any, () => {
+          adminCalled = true;
+        });
+        assert.strictEqual(adminCalled, true);
+
+        const reqBypass: any = {
+          originalUrl: "/api/v1/incidents",
+          user: {
+            id: "operator-1",
+            role: ROLES.SAFETY_OFFICER,
+            permissions: ["MAINTENANCE_BYPASS"],
+          },
+        };
+        let bypassCalled = false;
+        await guard(reqBypass, {} as any, () => {
+          bypassCalled = true;
+        });
+        assert.strictEqual(bypassCalled, true);
+      });
+    });
+
+    // ── SEC-16: Query String JWT Authentication Ban on Incident Service ──────
+    describe("SEC-16: Query String JWT Authentication Ban on Incident Service", () => {
+      it("should extract token from Authorization Bearer header", () => {
+        const req: any = {
+          headers: { authorization: "Bearer header-token-xyz" },
+        };
+        assert.strictEqual(extractTokenFromRequest(req), "header-token-xyz");
+      });
+
+      it("should extract token from HttpOnly cookie", () => {
+        const req: any = {
+          cookies: { accessToken: "cookie-token-abc" },
+        };
+        assert.strictEqual(extractTokenFromRequest(req), "cookie-token-abc");
+      });
+
+      it("should ignore query string token in extractTokenFromRequest even on /stream or /download", () => {
+        const reqStream: any = {
+          path: "/api/v1/evidences/123/stream",
+          query: { token: "query-token-stream" },
+        };
+        assert.strictEqual(extractTokenFromRequest(reqStream), undefined);
+
+        const reqDownload: any = {
+          path: "/api/v1/evidences/123/download",
+          query: { ticket: "query-ticket-download" },
+        };
+        assert.strictEqual(extractTokenFromRequest(reqDownload), undefined);
+      });
+
+      it("should reject request with 400 VALIDATION_ERROR when query contains token or ticket or access_token", async () => {
+        const reqWithToken: any = {
+          path: "/api/v1/evidences/123/download",
+          query: { token: "leaked-token" },
+        };
+        let tokenError: any = null;
+        await authMiddleware(reqWithToken, {} as any, (err?: any) => {
+          tokenError = err;
+        });
+
+        assert.ok(tokenError instanceof AppError);
+        assert.strictEqual(tokenError.statusCode, 400);
+        assert.strictEqual(tokenError.code, ERROR_CODE.VALIDATION_ERROR);
+        assert.ok(tokenError.message.includes("query string"));
+
+        const reqWithTicket: any = {
+          path: "/api/v1/incidents",
+          query: { ticket: "leaked-ticket" },
+        };
+        let ticketError: any = null;
+        await authMiddleware(reqWithTicket, {} as any, (err?: any) => {
+          ticketError = err;
+        });
+
+        assert.ok(ticketError instanceof AppError);
+        assert.strictEqual(ticketError.statusCode, 400);
+        assert.strictEqual(ticketError.code, ERROR_CODE.VALIDATION_ERROR);
       });
     });
   });

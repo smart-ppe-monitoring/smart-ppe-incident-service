@@ -42,6 +42,7 @@ export const MEDIA_LIMITS = {
   MIN_DIMENSION: 16,
   MAX_DIMENSION: 4096,
   MAX_FILE_SIZE_BYTES: 15 * 1024 * 1024, // 15MB
+  MAX_DIRECT_UPLOAD_BYTES: 5 * 1024 * 1024, // SEC-14: 5MB trần tối đa cho direct in-memory upload chống cạn kiệt RAM / Event Loop Starvation
   UNCONFIRMED_CLEANUP_HOURS: 24,
   SOFT_DELETED_RETENTION_DAYS: 30,
 } as const;

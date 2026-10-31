@@ -421,57 +421,66 @@ export class IncidentRepository {
       orderByClause = IncidentPrisma.sql`ORDER BY rank DESC, i.detected_at DESC`;
     }
 
-    const [rankedRows, countResult] = await Promise.all([
-      this.db.$queryRaw<Array<{ id: string; rank: number }>>`
-        SELECT
-          i.id,
-          ts_rank(to_tsvector('simple', coalesce(i.description, '') || ' ' || coalesce(i.violation_type, '')), to_tsquery('simple', ${tsQuery})) as rank
-        FROM incidents i
-        ${whereClause}
-        ${orderByClause}
-        OFFSET ${pagination.skip}
-        LIMIT ${pagination.take}
-      `,
-      this.db.$queryRaw<Array<{ count: bigint }>>`
-        SELECT COUNT(*)::bigint as count
-        FROM incidents i
-        ${whereClause}
-      `,
-    ]);
+    try {
+      const [rankedRows, countResult] = await Promise.all([
+        this.db.$queryRaw<Array<{ id: string; rank: number }>>`
+          SELECT
+            i.id,
+            ts_rank(to_tsvector('simple', coalesce(i.description, '') || ' ' || coalesce(i.violation_type, '')), to_tsquery('simple', ${tsQuery})) as rank
+          FROM incidents i
+          ${whereClause}
+          ${orderByClause}
+          OFFSET ${pagination.skip}
+          LIMIT ${pagination.take}
+        `,
+        this.db.$queryRaw<Array<{ count: bigint }>>`
+          SELECT COUNT(*)::bigint as count
+          FROM incidents i
+          ${whereClause}
+        `,
+      ]);
 
-    const total = Number(countResult[0]?.count ?? 0);
-    const ids = rankedRows.map((r) => r.id);
+      const total = Number(countResult[0]?.count ?? 0);
+      const ids = rankedRows.map((r) => r.id);
 
-    if (ids.length === 0) {
+      if (ids.length === 0) {
+        return {
+          data: [],
+          meta: formatPaginationMeta(pagination.page, pagination.limit, total),
+        };
+      }
+
+      const items = await this.db.incident.findMany({
+        where: { id: { in: ids } },
+        include: {
+          evidences: {
+            take: 1,
+            include: { metadata: true },
+          },
+          _count: {
+            select: { evidences: true, comments: true, assignments: true },
+          },
+        },
+      });
+
+      const itemMap = new Map(items.map((item) => [item.id, item]));
+      const orderedItems = ids
+        .map((id) => itemMap.get(id))
+        .filter((item): item is NonNullable<typeof item> => Boolean(item))
+        .map((item) => serializeIncident(item) as unknown as IncidentItemDto);
+
       return {
-        data: [],
+        data: orderedItems,
         meta: formatPaginationMeta(pagination.page, pagination.limit, total),
       };
+    } catch (err: any) {
+      // SEC-13: Nếu to_tsquery gặp lỗi cú pháp (ký tự & | !), fallback sang findAllIncidents tránh crash 500
+      console.warn(
+        `[IncidentRepository] Lỗi cú pháp FTS tsquery cho truy vấn '${search}', fallback sang findAllIncidents:`,
+        err?.message || err,
+      );
+      return this.findAllIncidents(query);
     }
-
-    const items = await this.db.incident.findMany({
-      where: { id: { in: ids } },
-      include: {
-        evidences: {
-          take: 1,
-          include: { metadata: true },
-        },
-        _count: {
-          select: { evidences: true, comments: true, assignments: true },
-        },
-      },
-    });
-
-    const itemMap = new Map(items.map((item) => [item.id, item]));
-    const orderedItems = ids
-      .map((id) => itemMap.get(id))
-      .filter((item): item is NonNullable<typeof item> => Boolean(item))
-      .map((item) => serializeIncident(item) as unknown as IncidentItemDto);
-
-    return {
-      data: orderedItems,
-      meta: formatPaginationMeta(pagination.page, pagination.limit, total),
-    };
   }
 
   async updateIncident(id: string, data: UpdateIncidentDto) {

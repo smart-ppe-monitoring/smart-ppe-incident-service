@@ -12,7 +12,10 @@ import {
   evidenceRouter,
 } from "./modules/incident/incident.route";
 import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
-import { requestIdMiddleware } from "./middlewares/request-id.middleware";
+import {
+  requestIdMiddleware,
+  requireGatewayOrigin,
+} from "./middlewares/request-id.middleware";
 import { maintenanceGuard } from "./middlewares/maintenance.middleware";
 import { envConfig } from "./config/env.config";
 import { buildOpenApiSpec } from "./config/openapi/openapi.registry";
@@ -112,12 +115,14 @@ incidentApp.use(
   "/api/v1/incidents",
   rateLimitMiddleware,
   maintenanceGuard(),
+  requireGatewayOrigin,
   incidentRouter,
 );
 incidentApp.use(
   "/incidents",
   rateLimitMiddleware,
   maintenanceGuard(),
+  requireGatewayOrigin,
   incidentRouter,
 );
 
@@ -125,12 +130,14 @@ incidentApp.use(
   "/api/v1/evidences",
   rateLimitMiddleware,
   maintenanceGuard(),
+  requireGatewayOrigin,
   evidenceRouter,
 );
 incidentApp.use(
   "/evidences",
   rateLimitMiddleware,
   maintenanceGuard(),
+  requireGatewayOrigin,
   evidenceRouter,
 );
 

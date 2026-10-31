@@ -8,13 +8,14 @@ import { ERROR_CODE } from "../common/errors/error-code";
 
 /**
  * Middleware xử lý upload ảnh vào RAM memory buffer với các giới hạn an toàn:
- * - Kích thước tối đa theo cấu hình MEDIA_LIMITS.MAX_FILE_SIZE_BYTES
+ * - Kích thước tối đa theo cấu hình MEDIA_LIMITS.MAX_DIRECT_UPLOAD_BYTES (5MB) để bảo vệ heap và Event Loop
  * - Lọc MIME type chặt chẽ chỉ chấp nhận ảnh hợp lệ
  */
 export const uploadImageMiddleware = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: MEDIA_LIMITS.MAX_FILE_SIZE_BYTES,
+    fileSize: MEDIA_LIMITS.MAX_DIRECT_UPLOAD_BYTES,
+    files: 1,
   },
   fileFilter: (_req, file, cb) => {
     const isSupported = (
