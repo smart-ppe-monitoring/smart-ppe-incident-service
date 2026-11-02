@@ -51,8 +51,8 @@ export const storageKeySchema = z
 export const createEvidenceSchema = z.object({
   cameraId: uuidSchema,
   evidenceType: z.enum(
-    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
-    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | VIDEO_CLIP)" }) },
+    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.REFERENCE_SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
+    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | REFERENCE_SNAPSHOT | VIDEO_CLIP)" }) },
   ),
   storageKey: storageKeySchema,
   fileName: z
@@ -81,7 +81,7 @@ export const evidenceQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   incidentId: uuidSchema.optional(),
   cameraId: uuidSchema.optional(),
-  evidenceType: z.enum([EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP]).optional(),
+  evidenceType: z.enum([EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.REFERENCE_SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP]).optional(),
   sortBy: z.enum(["capturedAt", "createdAt"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
 });
@@ -125,7 +125,35 @@ export const createIncidentSchema = z.object({
   initialEvidence: z
     .object({
       cameraId: uuidSchema.optional(),
-      evidenceType: z.enum([EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP]),
+      evidenceType: z.enum([
+        EVIDENCE_TYPE.SNAPSHOT,
+        EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+        EVIDENCE_TYPE.VIDEO_CLIP,
+      ]),
+      storageKey: storageKeySchema,
+      fileName: z.string().trim().min(1).max(255),
+      mimeType: z
+        .string()
+        .trim()
+        .min(1)
+        .max(100)
+        .regex(
+          /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/,
+          "Định dạng MIME type không hợp lệ",
+        ),
+      fileSize: z.coerce.number().nonnegative().optional(),
+      capturedAt: z.coerce.date(),
+      metadata: createEvidenceMetadataSchema.optional(),
+    })
+    .optional(),
+  initialReferenceEvidence: z
+    .object({
+      cameraId: uuidSchema.optional(),
+      evidenceType: z.enum([
+        EVIDENCE_TYPE.SNAPSHOT,
+        EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+        EVIDENCE_TYPE.VIDEO_CLIP,
+      ]).default(EVIDENCE_TYPE.REFERENCE_SNAPSHOT),
       storageKey: storageKeySchema,
       fileName: z.string().trim().min(1).max(255),
       mimeType: z

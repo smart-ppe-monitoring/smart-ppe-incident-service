@@ -19,8 +19,8 @@ export const requestEvidenceUploadUrlSchema = z.object({
   cameraId: uuidSchema,
   siteId: uuidSchema,
   evidenceType: z.enum(
-    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
-    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | VIDEO_CLIP)" }) },
+    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.REFERENCE_SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
+    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | REFERENCE_SNAPSHOT | VIDEO_CLIP)" }) },
   ),
   fileName: z
     .string({ required_error: "Tên tệp tin là bắt buộc" })
@@ -58,8 +58,8 @@ export const directUploadEvidenceSchema = z.object({
   incidentId: uuidSchema,
   cameraId: uuidSchema,
   evidenceType: z.enum(
-    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
-    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | VIDEO_CLIP)" }) },
+    [EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.REFERENCE_SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP],
+    { errorMap: () => ({ message: "Loại bằng chứng không hợp lệ (SNAPSHOT | REFERENCE_SNAPSHOT | VIDEO_CLIP)" }) },
   ),
   capturedAt: z.coerce.date().optional(),
   aiDetections: z

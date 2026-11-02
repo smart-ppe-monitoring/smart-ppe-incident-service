@@ -67,6 +67,14 @@ export const ppeViolationDetectedPayloadSchema = z.object({
   }),
   evidence: z.object({
     snapshotUrl: z.string().url().describe("URL ảnh chụp bằng chứng lưu trên MinIO/R2"),
+    referenceSnapshotUrl: z
+      .string()
+      .url()
+      .refine((url) => /^https?:\/\//i.test(url), {
+        message: "URL must use http or https protocol",
+      })
+      .optional()
+      .describe("URL ảnh đối chứng chụp trước đó (lúc tuân thủ hoặc t=0s)"),
     clipUrl: z.string().url().optional().describe("URL clip video ngắn 10-15s ghi lại vi phạm"),
     frameResolution: z.object({
       width: z.number().int().positive(),

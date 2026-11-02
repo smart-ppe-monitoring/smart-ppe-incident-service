@@ -24,6 +24,7 @@ import {
 import {
   INCIDENT_STATUS,
   ASSIGNMENT_STATUS,
+  EVIDENCE_TYPE,
 } from "../../common/constants/incident.constant";
 import { AppError } from "../../common/errors/app-error";
 import { ERROR_CODE } from "../../common/errors/error-code";
@@ -161,6 +162,37 @@ export class IncidentRepository {
                   frameRate: ev.metadata.frameRate ?? null,
                   checksum: ev.metadata.checksum ?? null,
                   aiDetections: ev.metadata.aiDetections ?? undefined,
+                },
+              });
+            }
+          }
+
+          // Nếu có bằng chứng đối chứng ban đầu (ảnh đối chứng trước đó / frame hợp lệ)
+          if (data.initialReferenceEvidence) {
+            const refEv = data.initialReferenceEvidence;
+            const refEvidence = await tx.evidence.create({
+              data: {
+                incidentId: incident.id,
+                cameraId: refEv.cameraId || data.cameraId,
+                evidenceType: refEv.evidenceType || EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+                storageKey: refEv.storageKey,
+                fileName: refEv.fileName,
+                mimeType: refEv.mimeType,
+                fileSize: refEv.fileSize ? BigInt(refEv.fileSize) : BigInt(0),
+                capturedAt: new Date(refEv.capturedAt),
+              },
+            });
+
+            if (refEv.metadata) {
+              await tx.evidenceMetadata.create({
+                data: {
+                  evidenceId: refEvidence.id,
+                  width: refEv.metadata.width ?? null,
+                  height: refEv.metadata.height ?? null,
+                  durationSeconds: refEv.metadata.durationSeconds ?? null,
+                  frameRate: refEv.metadata.frameRate ?? null,
+                  checksum: refEv.metadata.checksum ?? null,
+                  aiDetections: refEv.metadata.aiDetections ?? undefined,
                 },
               });
             }

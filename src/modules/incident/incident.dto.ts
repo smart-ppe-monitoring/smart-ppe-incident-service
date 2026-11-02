@@ -63,6 +63,7 @@ export interface CreateIncidentDto {
   detectedAt: string | Date;
   description?: string | null;
   initialEvidence?: Omit<CreateEvidenceDto, "incidentId">;
+  initialReferenceEvidence?: Omit<CreateEvidenceDto, "incidentId">;
 }
 
 export interface UpdateIncidentDto {

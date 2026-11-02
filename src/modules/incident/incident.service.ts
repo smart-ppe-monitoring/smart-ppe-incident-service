@@ -36,6 +36,7 @@ import {
   INCIDENT_STATUS,
   EVIDENCE_ACCESS_ACTION,
   EvidenceAccessAction,
+  EVIDENCE_TYPE,
 } from "../../common/constants/incident.constant";
 import { ROLES } from "../../common/constants/role.constant";
 import { isUuid } from "../../common/helpers/uuid.helper";
@@ -68,9 +69,28 @@ export class IncidentService {
       }
     }
 
+    if (data.initialReferenceEvidence?.storageKey && data.siteId) {
+      const parts = data.initialReferenceEvidence.storageKey.split("/");
+      if (parts.length >= 3 && isUuid(parts[1]) && parts[1] !== data.siteId) {
+        throw new AppError(
+          "storageKey của ảnh đối chứng ban đầu không thuộc phạm vi công trường của sự cố",
+          400,
+          ERROR_CODE.VALIDATION_ERROR,
+        );
+      }
+    }
+
     const created = await this.repository.createIncident(data, actorId);
 
     // Tự động phát thông báo sự cố vi phạm PPE cho cán bộ an toàn (Task BE-08)
+    // SEC-29: Sử dụng hằng số tập trung EVIDENCE_TYPE thay vì hardcoded magic strings và enum trạng thái sự cố
+    const snapshotEv = created.evidences?.find(
+      (e: any) => e.evidenceType === EVIDENCE_TYPE.SNAPSHOT,
+    );
+    const refEv = created.evidences?.find(
+      (e: any) => e.evidenceType === EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+    );
+
     this.notification
       .dispatchIncidentNotification({
         incidentId: created.id,
@@ -80,6 +100,8 @@ export class IncidentService {
         severity: created.severity,
         description: created.description || undefined,
         detectedAt: created.detectedAt,
+        snapshotUrl: snapshotEv?.storageKey ? `/api/v1/incidents/evidences/${snapshotEv.id}/download` : undefined,
+        referenceSnapshotUrl: refEv?.storageKey ? `/api/v1/incidents/evidences/${refEv.id}/download` : undefined,
       })
       .catch((err) => {
         console.warn(

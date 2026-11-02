@@ -6,6 +6,8 @@ export interface IncidentNotificationPayload {
   severity: string;
   description?: string;
   detectedAt: Date;
+  snapshotUrl?: string;
+  referenceSnapshotUrl?: string;
 }
 
 export interface NotificationService {

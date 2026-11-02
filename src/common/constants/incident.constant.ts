@@ -44,6 +44,7 @@ export type IncidentSeverity =
  */
 export const EVIDENCE_TYPE = {
   SNAPSHOT: "SNAPSHOT",
+  REFERENCE_SNAPSHOT: "REFERENCE_SNAPSHOT",
   VIDEO_CLIP: "VIDEO_CLIP",
 } as const;
 
