@@ -17,7 +17,6 @@
     "test": "node --test --test-concurrency=1 --import tsx tests/*.test.ts"
   },
   "dependencies": {
-    "@smart-ppe/common": "git+https://github.com/smart-ppe-monitoring/smart-ppe-shared-contracts.git",
     "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@aws-sdk/client-s3": "^3.1125.0",
     "@aws-sdk/s3-request-presigner": "^3.1125.0",
