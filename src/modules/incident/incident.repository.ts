@@ -339,13 +339,15 @@ export class IncidentRepository {
     if (query.search) {
       where.description = { contains: query.search, mode: "insensitive" };
     }
-    if (query.fromDate || query.toDate) {
+    const fromDate = query.startDate || query.fromDate;
+    const toDate = query.endDate || query.toDate;
+    if (fromDate || toDate) {
       where.detectedAt = {};
-      if (query.fromDate) {
-        where.detectedAt.gte = new Date(query.fromDate);
+      if (fromDate) {
+        where.detectedAt.gte = new Date(fromDate);
       }
-      if (query.toDate) {
-        where.detectedAt.lte = new Date(query.toDate);
+      if (toDate) {
+        where.detectedAt.lte = new Date(toDate);
       }
     }
 
@@ -425,12 +427,15 @@ export class IncidentRepository {
       whereConditions.push(IncidentPrisma.sql`i.status = ${query.status}`);
     }
 
-    if (query.fromDate) {
-      whereConditions.push(IncidentPrisma.sql`i.detected_at >= ${new Date(query.fromDate)}`);
+    const ftsFromDate = query.startDate || query.fromDate;
+    const ftsToDate = query.endDate || query.toDate;
+
+    if (ftsFromDate) {
+      whereConditions.push(IncidentPrisma.sql`i.detected_at >= ${new Date(ftsFromDate)}`);
     }
 
-    if (query.toDate) {
-      whereConditions.push(IncidentPrisma.sql`i.detected_at <= ${new Date(query.toDate)}`);
+    if (ftsToDate) {
+      whereConditions.push(IncidentPrisma.sql`i.detected_at <= ${new Date(ftsToDate)}`);
     }
 
     const whereClause = IncidentPrisma.sql`WHERE ${IncidentPrisma.join(whereConditions, " AND ")}`;
@@ -610,6 +615,126 @@ export class IncidentRepository {
         });
 
         return serializeIncident(reloaded);
+      },
+      DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+    );
+  }
+
+  async batchTransitionStatus(params: {
+    incidentIds: string[];
+    action: "CONFIRM" | "REJECT";
+    changedBy: string;
+    reason?: string | null;
+    siteFilter?: string[];
+  }): Promise<{
+    total: number;
+    updatedCount: number;
+    action: "CONFIRM" | "REJECT";
+    newStatus: string;
+    updatedIds: string[];
+  }> {
+    const validActorId = normalizeActorUuid(params.changedBy, false);
+    const newStatus =
+      params.action === "CONFIRM"
+        ? INCIDENT_STATUS.CONFIRMED
+        : INCIDENT_STATUS.DISMISSED;
+
+    const defaultReason =
+      params.action === "CONFIRM"
+        ? "Xác nhận vi phạm quy chuẩn an toàn PPE (hàng loạt)"
+        : "Bác bỏ cảnh báo vi phạm quy chuẩn an toàn PPE (hàng loạt)";
+    const finalReason = params.reason || defaultReason;
+
+    return this.db.$transaction(
+      async (tx: any) => {
+        const where: any = {
+          id: { in: params.incidentIds },
+          status: INCIDENT_STATUS.PENDING_REVIEW,
+        };
+
+        if (params.siteFilter && params.siteFilter.length > 0) {
+          where.siteId = { in: params.siteFilter };
+        }
+
+        const pendingIncidents = await tx.incident.findMany({
+          where,
+          select: { id: true, siteId: true, status: true },
+        });
+
+        if (pendingIncidents.length === 0) {
+          return {
+            total: params.incidentIds.length,
+            updatedCount: 0,
+            action: params.action,
+            newStatus,
+            updatedIds: [],
+          };
+        }
+
+        const validIds = pendingIncidents.map((i: any) => i.id);
+
+        await tx.incident.updateMany({
+          where: { id: { in: validIds } },
+          data: { status: newStatus },
+        });
+
+        const historyEntries = pendingIncidents.map((inc: any) => ({
+          incidentId: inc.id,
+          oldStatus: inc.status,
+          newStatus,
+          changedBy: validActorId,
+          reason: finalReason,
+        }));
+
+        if (typeof tx.incidentStatusHistory?.createMany === "function") {
+          await tx.incidentStatusHistory.createMany({
+            data: historyEntries,
+          });
+        } else if (typeof tx.incidentStatusHistory?.create === "function") {
+          await Promise.all(
+            historyEntries.map((entry: any) =>
+              tx.incidentStatusHistory.create({ data: entry }),
+            ),
+          );
+        }
+
+        if (
+          typeof tx.outboxEvent?.createMany === "function" ||
+          typeof tx.outboxEvent?.create === "function"
+        ) {
+          const outboxEntries = pendingIncidents.map((inc: any) => ({
+            eventType: "ppe.incident.status_changed",
+            aggregateId: inc.id,
+            payload: {
+              incidentId: inc.id,
+              siteId: inc.siteId,
+              oldStatus: inc.status,
+              newStatus,
+              changedBy: validActorId,
+              reason: finalReason,
+              timestamp: new Date().toISOString(),
+            },
+            status: "PENDING",
+          }));
+
+          if (typeof tx.outboxEvent?.createMany === "function") {
+            await tx.outboxEvent.createMany({
+              data: outboxEntries,
+            });
+          } else {
+            await Promise.all(
+              outboxEntries.map((e: any) => tx.outboxEvent.create({ data: e })),
+            );
+          }
+        }
+
+        return {
+          total: params.incidentIds.length,
+          updatedCount: validIds.length,
+          action: params.action,
+          newStatus,
+          updatedIds: validIds,
+        };
       },
       DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
     );

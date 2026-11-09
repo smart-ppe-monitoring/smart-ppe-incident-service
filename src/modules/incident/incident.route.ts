@@ -11,6 +11,7 @@ import {
   createIncidentSchema,
   updateIncidentSchema,
   incidentQuerySchema,
+  batchReviewIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
   closeIncidentSchema,
@@ -42,6 +43,14 @@ incidentRouter.post(
   requirePermission(PERMISSIONS.PPE_INCIDENT_MANAGE),
   validate(createIncidentSchema),
   incidentController.createIncident,
+);
+
+incidentRouter.post(
+  "/batch-review",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_REVIEW),
+  validate(batchReviewIncidentsSchema),
+  incidentController.batchReviewIncidents,
 );
 
 incidentRouter.get(

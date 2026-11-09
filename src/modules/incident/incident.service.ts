@@ -18,6 +18,8 @@ import {
   UpdateIncidentDto,
   IncidentQueryDto,
   ReviewIncidentDto,
+  BatchReviewIncidentDto,
+  BatchReviewResultDto,
   ResolveIncidentDto,
   CloseIncidentDto,
   CreateIncidentAssignmentDto,
@@ -202,6 +204,45 @@ export class IncidentService {
       newStatus,
       changedBy: actorId,
       reason,
+    });
+  }
+
+  async batchReviewIncidents(
+    dto: BatchReviewIncidentDto,
+    actorId: string,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+  ): Promise<BatchReviewResultDto> {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    let siteFilter: string[] | undefined;
+
+    if (userContext && userContext.role !== ROLES.ADMIN) {
+      const allowedSiteIds = [
+        ...(userContext.siteId ? [userContext.siteId] : []),
+        ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
+      ];
+
+      if (allowedSiteIds.length === 0) {
+        return {
+          total: uniqueIds.length,
+          updatedCount: 0,
+          action: dto.action,
+          newStatus:
+            dto.action === "CONFIRM"
+              ? INCIDENT_STATUS.CONFIRMED
+              : INCIDENT_STATUS.DISMISSED,
+          updatedIds: [],
+        };
+      }
+
+      siteFilter = allowedSiteIds;
+    }
+
+    return this.repository.batchTransitionStatus({
+      incidentIds: uniqueIds,
+      action: dto.action,
+      changedBy: actorId,
+      reason: dto.resolutionNote,
+      siteFilter,
     });
   }
 

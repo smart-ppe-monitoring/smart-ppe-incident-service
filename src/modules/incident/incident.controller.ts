@@ -5,6 +5,7 @@ import {
   UpdateIncidentDto,
   IncidentQueryDto,
   ReviewIncidentDto,
+  BatchReviewIncidentDto,
   ResolveIncidentDto,
   CloseIncidentDto,
   CreateIncidentAssignmentDto,
@@ -118,6 +119,29 @@ export class IncidentController {
       const result = await this.service.reviewIncident(id, body, actorId);
       res.json({
         success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  batchReviewIncidents = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const actorId = getActorId(req);
+      const body = req.body as BatchReviewIncidentDto;
+      const result = await this.service.batchReviewIncidents(
+        body,
+        actorId,
+        req.user,
+      );
+      res.json({
+        success: true,
+        message: `Đã duyệt thành công ${result.updatedCount}/${result.total} sự cố`,
         data: result,
       });
     } catch (error) {

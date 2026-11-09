@@ -230,11 +230,43 @@ export const incidentQuerySchema = z.object({
     .optional(),
   fromDate: z.coerce.date().optional(),
   toDate: z.coerce.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
   sortBy: z.enum(["detectedAt", "createdAt", "severity", "status"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
 });
 
 // ── Lifecycle Schemas ────────────────────────────────────────────────────────
+export const batchReviewIncidentsSchema = z
+  .object({
+    ids: z
+      .array(uuidSchema, {
+        required_error: "Danh sách ID sự cố (ids) là bắt buộc",
+      })
+      .min(1, "Danh sách ID sự cố không được để trống")
+      .max(100, "Tối đa 100 sự cố mỗi lần duyệt hàng loạt"),
+    action: z.enum(["CONFIRM", "REJECT"], {
+      errorMap: () => ({ message: "Hành động chỉ có thể là CONFIRM hoặc REJECT" }),
+    }),
+    resolutionNote: z.string().trim().max(1000).optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.action === "REJECT") {
+        return (
+          typeof data.resolutionNote === "string" &&
+          data.resolutionNote.trim().length >= 3
+        );
+      }
+      return true;
+    },
+    {
+      message:
+        "Bắt buộc phải nhập lý do (tối thiểu 3 ký tự) khi bác bỏ cảnh báo vi phạm (REJECT)",
+      path: ["resolutionNote"],
+    },
+  );
+
 export const reviewIncidentSchema = z
   .object({
     decision: z.enum(["CONFIRMED", "DISMISSED"], {

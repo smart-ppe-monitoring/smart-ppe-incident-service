@@ -4,6 +4,7 @@ import {
   updateIncidentSchema,
   incidentQuerySchema,
   incidentIdParamSchema,
+  batchReviewIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
   closeIncidentSchema,
@@ -23,6 +24,7 @@ import { z } from "zod";
 export function registerIncidentOpenApi(): void {
   openapiRegistry.register("CreateIncidentRequest", createIncidentSchema);
   openapiRegistry.register("UpdateIncidentRequest", updateIncidentSchema);
+  openapiRegistry.register("BatchReviewIncidentRequest", batchReviewIncidentsSchema);
   openapiRegistry.register("ReviewIncidentRequest", reviewIncidentSchema);
   openapiRegistry.register("ResolveIncidentRequest", resolveIncidentSchema);
   openapiRegistry.register("CloseIncidentRequest", closeIncidentSchema);
@@ -82,6 +84,43 @@ export function registerIncidentOpenApi(): void {
             schema: z.object({
               success: z.boolean(),
               data: z.any(),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/incidents/batch-review",
+    tags: ["Incidents"],
+    summary: "Duyệt hàng loạt sự cố vi phạm PPE (CONFIRM hoặc REJECT)",
+    security: [{ BearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: batchReviewIncidentsSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Duyệt hàng loạt sự cố thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              message: z.string(),
+              data: z.object({
+                total: z.number(),
+                updatedCount: z.number(),
+                action: z.enum(["CONFIRM", "REJECT"]),
+                newStatus: z.string(),
+                updatedIds: z.array(z.string()),
+              }),
             }),
           },
         },

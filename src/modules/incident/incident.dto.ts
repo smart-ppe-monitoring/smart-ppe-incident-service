@@ -83,6 +83,8 @@ export interface IncidentQueryDto {
   status?: IncidentStatus;
   fromDate?: string | Date;
   toDate?: string | Date;
+  startDate?: string | Date;
+  endDate?: string | Date;
   sortBy?: "detectedAt" | "createdAt" | "severity" | "status";
   sortOrder?: "asc" | "desc";
 }
@@ -91,6 +93,20 @@ export interface IncidentQueryDto {
 export interface ReviewIncidentDto {
   decision: "CONFIRMED" | "DISMISSED";
   reason?: string;
+}
+
+export interface BatchReviewIncidentDto {
+  ids: string[];
+  action: "CONFIRM" | "REJECT";
+  resolutionNote?: string;
+}
+
+export interface BatchReviewResultDto {
+  total: number;
+  updatedCount: number;
+  action: "CONFIRM" | "REJECT";
+  newStatus: string;
+  updatedIds: string[];
 }
 
 export interface ResolveIncidentDto {
