@@ -3,6 +3,7 @@ import {
   createIncidentSchema,
   updateIncidentSchema,
   incidentQuerySchema,
+  incidentStatusCountsQuerySchema,
   incidentIdParamSchema,
   batchReviewIncidentsSchema,
   reviewIncidentSchema,
@@ -33,6 +34,40 @@ export function registerIncidentOpenApi(): void {
   openapiRegistry.register("CreateEvidenceRequest", createEvidenceSchema);
   openapiRegistry.register("RequestEvidenceUploadUrlRequest", requestEvidenceUploadUrlSchema);
   openapiRegistry.register("DirectUploadEvidenceRequest", directUploadEvidenceSchema);
+
+  const batchReviewResultSchema = z.object({
+    total: z.number().openapi({ example: 5, description: "Tổng số bản ghi yêu cầu cập nhật" }),
+    updatedCount: z.number().openapi({ example: 5, description: "Số bản ghi được cập nhật thành công" }),
+    action: z.enum(["CONFIRM", "REJECT"]).openapi({ example: "CONFIRM", description: "Hành động phê duyệt áp dụng" }),
+    newStatus: z.string().openapi({ example: "CONFIRMED", description: "Trạng thái mới sau cập nhật" }),
+    updatedIds: z.array(z.string().uuid()).openapi({
+      example: ["019313a4-23b4-7890-8123-456789abcdef"],
+      description: "Danh sách ID các sự cố đã cập nhật thành công",
+    }),
+  });
+
+  const batchReviewResponseSchema = z.object({
+    success: z.boolean().openapi({ example: true }),
+    message: z.string().openapi({ example: "Đã duyệt thành công 5/5 sự cố" }),
+    data: batchReviewResultSchema,
+  });
+
+  const incidentStatusCountsDtoSchema = z.object({
+    total: z.number().openapi({ example: 48, description: "Tổng số sự cố thỏa mãn bộ lọc" }),
+    pendingReview: z.number().openapi({ example: 6, description: "Số sự cố đang chờ người dùng kiểm duyệt" }),
+    critical: z.number().openapi({ example: 5, description: "Số sự cố ở mức độ nghiêm trọng CRITICAL" }),
+    resolved: z.number().openapi({ example: 37, description: "Số sự cố đã xử lý xong (RESOLVED hoặc CLOSED)" }),
+  });
+
+  const incidentStatusCountsResponseSchema = z.object({
+    success: z.boolean().openapi({ example: true }),
+    data: incidentStatusCountsDtoSchema,
+  });
+
+  openapiRegistry.register("BatchReviewResultDto", batchReviewResultSchema);
+  openapiRegistry.register("BatchReviewResponse", batchReviewResponseSchema);
+  openapiRegistry.register("IncidentStatusCountsDto", incidentStatusCountsDtoSchema);
+  openapiRegistry.register("IncidentStatusCountsResponse", incidentStatusCountsResponseSchema);
 
   // ── Incidents ──────────────────────────────────────────────────────────────
   openapiRegistry.registerPath({
@@ -111,17 +146,26 @@ export function registerIncidentOpenApi(): void {
         description: "Duyệt hàng loạt sự cố thành công",
         content: {
           "application/json": {
-            schema: z.object({
-              success: z.boolean(),
-              message: z.string(),
-              data: z.object({
-                total: z.number(),
-                updatedCount: z.number(),
-                action: z.enum(["CONFIRM", "REJECT"]),
-                newStatus: z.string(),
-                updatedIds: z.array(z.string()),
-              }),
-            }),
+            schema: batchReviewResponseSchema,
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/incidents/status-counts",
+    tags: ["Incidents"],
+    summary: "Thống kê số lượng sự cố theo trạng thái cho thẻ KPI (tổng số, chờ duyệt, nguy cấp, đã xử lý)",
+    security: [{ BearerAuth: [] }],
+    request: { query: incidentStatusCountsQuerySchema },
+    responses: {
+      200: {
+        description: "Lấy thống kê số lượng sự cố thành công",
+        content: {
+          "application/json": {
+            schema: incidentStatusCountsResponseSchema,
           },
         },
       },

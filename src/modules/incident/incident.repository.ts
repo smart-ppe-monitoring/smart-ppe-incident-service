@@ -15,6 +15,8 @@ import {
   CreateIncidentDto,
   UpdateIncidentDto,
   IncidentQueryDto,
+  IncidentStatusCountsQueryDto,
+  IncidentStatusCountsDto,
   CreateEvidenceDto,
   EvidenceQueryDto,
   CreateEvidenceAccessLogDto,
@@ -23,6 +25,7 @@ import {
 } from "./incident.dto";
 import {
   INCIDENT_STATUS,
+  INCIDENT_SEVERITY,
   ASSIGNMENT_STATUS,
   EVIDENCE_TYPE,
 } from "../../common/constants/incident.constant";
@@ -378,6 +381,72 @@ export class IncidentRepository {
     return {
       data: items.map((item) => serializeIncident(item) as unknown as IncidentItemDto),
       meta: formatPaginationMeta(pagination.page, pagination.limit, total),
+    };
+  }
+
+  /**
+   * Đếm số lượng sự cố vi phạm theo trạng thái và mức độ nghiêm trọng (Dashboard KPI cards)
+   * Tối ưu hóa truy vấn nhẹ và siêu nhanh bằng Prisma count song song có index
+   */
+  async getStatusCounts(
+    query: IncidentStatusCountsQueryDto,
+    siteFilter?: string[],
+  ): Promise<IncidentStatusCountsDto> {
+    const where: IncidentPrisma.IncidentWhereInput = {};
+
+    if (query.siteId) {
+      if (!siteFilter || siteFilter.includes(query.siteId)) {
+        where.siteId = query.siteId;
+      } else {
+        where.siteId = { in: [] };
+      }
+    } else if (siteFilter && siteFilter.length > 0) {
+      where.siteId = { in: siteFilter };
+    }
+
+    if (query.cameraId) {
+      where.cameraId = query.cameraId;
+    }
+
+    const fromDate = query.startDate || query.fromDate;
+    const toDate = query.endDate || query.toDate;
+    if (fromDate || toDate) {
+      where.detectedAt = {};
+      if (fromDate) {
+        where.detectedAt.gte = new Date(fromDate);
+      }
+      if (toDate) {
+        where.detectedAt.lte = new Date(toDate);
+      }
+    }
+
+    const [total, pendingReview, critical, resolved] = await Promise.all([
+      this.db.incident.count({ where }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          status: INCIDENT_STATUS.PENDING_REVIEW,
+        },
+      }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          severity: INCIDENT_SEVERITY.CRITICAL,
+        },
+      }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          status: { in: [INCIDENT_STATUS.RESOLVED, INCIDENT_STATUS.CLOSED] },
+        },
+      }),
+    ]);
+
+    return {
+      total,
+      pendingReview,
+      critical,
+      resolved,
     };
   }
 

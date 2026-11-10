@@ -17,6 +17,8 @@ import {
   CreateIncidentDto,
   UpdateIncidentDto,
   IncidentQueryDto,
+  IncidentStatusCountsQueryDto,
+  IncidentStatusCountsDto,
   ReviewIncidentDto,
   BatchReviewIncidentDto,
   BatchReviewResultDto,
@@ -135,6 +137,44 @@ export class IncidentService {
       return this.repository.searchFts(query);
     }
     return this.repository.findAllIncidents(query);
+  }
+
+  async getStatusCounts(
+    query: IncidentStatusCountsQueryDto,
+    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+  ): Promise<IncidentStatusCountsDto> {
+    let siteFilter: string[] | undefined;
+
+    if (userContext && userContext.role !== ROLES.ADMIN) {
+      const allowedSiteIds = Array.from(
+        new Set([
+          ...(userContext.siteId ? [userContext.siteId] : []),
+          ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
+        ]),
+      );
+
+      if (allowedSiteIds.length === 0) {
+        return {
+          total: 0,
+          pendingReview: 0,
+          critical: 0,
+          resolved: 0,
+        };
+      }
+
+      if (query.siteId && !allowedSiteIds.includes(query.siteId)) {
+        return {
+          total: 0,
+          pendingReview: 0,
+          critical: 0,
+          resolved: 0,
+        };
+      }
+
+      siteFilter = allowedSiteIds;
+    }
+
+    return this.repository.getStatusCounts(query, siteFilter);
   }
 
   async updateIncident(id: string, data: UpdateIncidentDto) {

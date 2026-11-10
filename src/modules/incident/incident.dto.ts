@@ -162,3 +162,19 @@ export interface IncidentItemDto {
   };
 }
 
+export interface IncidentStatusCountsQueryDto {
+  siteId?: string;
+  cameraId?: string;
+  fromDate?: Date | string;
+  toDate?: Date | string;
+  startDate?: Date | string;
+  endDate?: Date | string;
+}
+
+export interface IncidentStatusCountsDto {
+  total: number;
+  pendingReview: number;
+  critical: number;
+  resolved: number;
+}
+

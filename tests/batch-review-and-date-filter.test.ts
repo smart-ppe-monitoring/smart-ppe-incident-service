@@ -5,6 +5,7 @@ import { IncidentService } from "../src/modules/incident/incident.service";
 import {
   batchReviewIncidentsSchema,
   incidentQuerySchema,
+  incidentStatusCountsQuerySchema,
 } from "../src/modules/incident/incident.validation";
 import {
   INCIDENT_STATUS,
@@ -371,6 +372,242 @@ describe("Batch Review & Date Filter Suite", () => {
       assert.ok(capturedWhere.detectedAt);
       assert.deepStrictEqual(capturedWhere.detectedAt.gte, fromDate);
       assert.deepStrictEqual(capturedWhere.detectedAt.lte, toDate);
+    });
+  });
+
+  describe("4. Status Counts KPI Suite", () => {
+    describe("Validation Schema", () => {
+      it("should accept valid empty query", () => {
+        const parsed = incidentStatusCountsQuerySchema.safeParse({});
+        assert.strictEqual(parsed.success, true);
+      });
+
+      it("should accept valid siteId, cameraId, and ISO date strings", () => {
+        const parsed = incidentStatusCountsQuerySchema.safeParse({
+          siteId: siteA,
+          cameraId: validUuid1,
+          fromDate: "2026-11-01T00:00:00.000Z",
+          toDate: "2026-11-10T23:59:59.999Z",
+        });
+        assert.strictEqual(parsed.success, true);
+        if (parsed.success) {
+          assert.strictEqual(parsed.data.siteId, siteA);
+          assert.strictEqual(parsed.data.cameraId, validUuid1);
+          assert.ok(parsed.data.fromDate instanceof Date);
+          assert.ok(parsed.data.toDate instanceof Date);
+        }
+      });
+
+      it("should support startDate and endDate as aliases", () => {
+        const parsed = incidentStatusCountsQuerySchema.safeParse({
+          startDate: "2026-11-01",
+          endDate: "2026-11-10",
+        });
+        assert.strictEqual(parsed.success, true);
+        if (parsed.success) {
+          assert.ok(parsed.data.startDate instanceof Date);
+          assert.ok(parsed.data.endDate instanceof Date);
+        }
+      });
+
+      it("should reject invalid siteId or cameraId format", () => {
+        const parsed1 = incidentStatusCountsQuerySchema.safeParse({
+          siteId: "not-a-uuid",
+        });
+        assert.strictEqual(parsed1.success, false);
+
+        const parsed2 = incidentStatusCountsQuerySchema.safeParse({
+          cameraId: "12345",
+        });
+        assert.strictEqual(parsed2.success, false);
+      });
+    });
+
+    describe("Repository Execution", () => {
+      it("should execute 4 parallel count queries with correct filters", async () => {
+        const capturedCalls: any[] = [];
+        const mockPrisma = {
+          incident: {
+            count: mock.fn(async (args: any) => {
+              capturedCalls.push(args);
+              if (args.where?.status === INCIDENT_STATUS.PENDING_REVIEW) return 6;
+              if (args.where?.severity === "CRITICAL") return 5;
+              if (args.where?.status?.in) return 37;
+              return 48; // total
+            }),
+          },
+        };
+
+        const repo = new IncidentRepository(mockPrisma);
+        const fromDate = new Date("2026-11-01T00:00:00Z");
+        const toDate = new Date("2026-11-10T23:59:59Z");
+
+        const result = await repo.getStatusCounts(
+          {
+            siteId: siteA,
+            cameraId: validUuid1,
+            fromDate,
+            toDate,
+          },
+          [siteA],
+        );
+
+        assert.deepStrictEqual(result, {
+          total: 48,
+          pendingReview: 6,
+          critical: 5,
+          resolved: 37,
+        });
+
+        assert.strictEqual(capturedCalls.length, 4);
+        for (const call of capturedCalls) {
+          assert.strictEqual(call.where.siteId, siteA);
+          assert.strictEqual(call.where.cameraId, validUuid1);
+          assert.deepStrictEqual(call.where.detectedAt.gte, fromDate);
+          assert.deepStrictEqual(call.where.detectedAt.lte, toDate);
+        }
+      });
+
+      it("should defense-in-depth restrict where.siteId to empty set when query.siteId is outside siteFilter", async () => {
+        const capturedCalls: any[] = [];
+        const mockPrisma = {
+          incident: {
+            count: mock.fn(async (args: any) => {
+              capturedCalls.push(args);
+              return 0;
+            }),
+          },
+        };
+
+        const repo = new IncidentRepository(mockPrisma);
+        const disallowedSite = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+        await repo.getStatusCounts({ siteId: disallowedSite }, [siteA]);
+
+        assert.strictEqual(capturedCalls.length, 4);
+        for (const call of capturedCalls) {
+          assert.deepStrictEqual(call.where.siteId, { in: [] });
+        }
+      });
+    });
+
+    describe("Service Tenant Scoping & Business Logic", () => {
+      it("should allow admin to query across any site", async () => {
+        let repoPassedFilter: string[] | undefined = undefined;
+        const mockRepo = {
+          getStatusCounts: mock.fn(async (_query: any, siteFilter?: string[]) => {
+            repoPassedFilter = siteFilter;
+            return { total: 10, pendingReview: 2, critical: 1, resolved: 7 };
+          }),
+        };
+
+        const service = new IncidentService(mockRepo as any);
+        const adminContext = {
+          userId: actorId,
+          role: ROLES.ADMIN,
+          siteId: undefined,
+          siteIds: [],
+        };
+
+        const res = await service.getStatusCounts({ siteId: siteA }, adminContext);
+        assert.strictEqual(res.total, 10);
+        assert.strictEqual(repoPassedFilter, undefined);
+      });
+
+      it("should scope non-admin user to allowed sites", async () => {
+        let repoPassedFilter: string[] | undefined = undefined;
+        const mockRepo = {
+          getStatusCounts: mock.fn(async (_query: any, siteFilter?: string[]) => {
+            repoPassedFilter = siteFilter;
+            return { total: 5, pendingReview: 1, critical: 0, resolved: 4 };
+          }),
+        };
+
+        const service = new IncidentService(mockRepo as any);
+        const nonAdminContext = {
+          userId: actorId,
+          role: ROLES.SAFETY_OFFICER,
+          siteId: siteA,
+          siteIds: [siteB],
+        };
+
+        const res = await service.getStatusCounts({}, nonAdminContext);
+        assert.strictEqual(res.total, 5);
+        assert.deepStrictEqual(repoPassedFilter, [siteA, siteB]);
+      });
+
+      it("should fail closed and return 0 counts for non-admin with 0 assigned sites", async () => {
+        const mockRepo = {
+          getStatusCounts: mock.fn(async () => {
+            throw new Error("Should not be called!");
+          }),
+        };
+
+        const service = new IncidentService(mockRepo as any);
+        const nonAdminContext = {
+          userId: actorId,
+          role: ROLES.SAFETY_OFFICER,
+          siteId: undefined,
+          siteIds: [],
+        };
+
+        const res = await service.getStatusCounts({}, nonAdminContext);
+        assert.deepStrictEqual(res, {
+          total: 0,
+          pendingReview: 0,
+          critical: 0,
+          resolved: 0,
+        });
+        assert.strictEqual(mockRepo.getStatusCounts.mock.callCount(), 0);
+      });
+
+      it("should fail closed if non-admin requests a siteId outside their allowed sites", async () => {
+        const mockRepo = {
+          getStatusCounts: mock.fn(async () => {
+            throw new Error("Should not be called!");
+          }),
+        };
+
+        const service = new IncidentService(mockRepo as any);
+        const nonAdminContext = {
+          userId: actorId,
+          role: ROLES.SAFETY_OFFICER,
+          siteId: siteA,
+          siteIds: [],
+        };
+
+        const disallowedSite = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const res = await service.getStatusCounts({ siteId: disallowedSite }, nonAdminContext);
+        assert.deepStrictEqual(res, {
+          total: 0,
+          pendingReview: 0,
+          critical: 0,
+          resolved: 0,
+        });
+        assert.strictEqual(mockRepo.getStatusCounts.mock.callCount(), 0);
+      });
+
+      it("should deduplicate site IDs when user has overlapping siteId and siteIds", async () => {
+        let repoPassedFilter: string[] | undefined = undefined;
+        const mockRepo = {
+          getStatusCounts: mock.fn(async (_query: any, siteFilter?: string[]) => {
+            repoPassedFilter = siteFilter;
+            return { total: 3, pendingReview: 1, critical: 0, resolved: 2 };
+          }),
+        };
+
+        const service = new IncidentService(mockRepo as any);
+        const nonAdminContext = {
+          userId: actorId,
+          role: ROLES.SAFETY_OFFICER,
+          siteId: siteA,
+          siteIds: [siteA, siteB],
+        };
+
+        const res = await service.getStatusCounts({}, nonAdminContext);
+        assert.strictEqual(res.total, 3);
+        assert.deepStrictEqual(repoPassedFilter, [siteA, siteB]);
+      });
     });
   });
 });

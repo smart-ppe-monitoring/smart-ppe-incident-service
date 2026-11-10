@@ -236,6 +236,15 @@ export const incidentQuerySchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).optional(),
 });
 
+export const incidentStatusCountsQuerySchema = z.object({
+  siteId: uuidSchema.optional(),
+  cameraId: uuidSchema.optional(),
+  fromDate: z.coerce.date().optional(),
+  toDate: z.coerce.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+});
+
 // ── Lifecycle Schemas ────────────────────────────────────────────────────────
 export const batchReviewIncidentsSchema = z
   .object({

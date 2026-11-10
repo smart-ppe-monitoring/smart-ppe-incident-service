@@ -4,6 +4,7 @@ import {
   CreateIncidentDto,
   UpdateIncidentDto,
   IncidentQueryDto,
+  IncidentStatusCountsQueryDto,
   ReviewIncidentDto,
   BatchReviewIncidentDto,
   ResolveIncidentDto,
@@ -77,6 +78,22 @@ export class IncidentController {
         success: true,
         data: result.data,
         meta: result.meta,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getStatusCounts = async (
+    req: Request<unknown, unknown, unknown, IncidentStatusCountsQueryDto>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const result = await this.service.getStatusCounts(req.query, req.user);
+      res.json({
+        success: true,
+        data: result,
       });
     } catch (error) {
       next(error);

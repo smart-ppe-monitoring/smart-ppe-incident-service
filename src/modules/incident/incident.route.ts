@@ -11,6 +11,7 @@ import {
   createIncidentSchema,
   updateIncidentSchema,
   incidentQuerySchema,
+  incidentStatusCountsQuerySchema,
   batchReviewIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
@@ -51,6 +52,14 @@ incidentRouter.post(
   requirePermission(PERMISSIONS.PPE_INCIDENT_REVIEW),
   validate(batchReviewIncidentsSchema),
   incidentController.batchReviewIncidents,
+);
+
+incidentRouter.get(
+  "/status-counts",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
+  validate(incidentStatusCountsQuerySchema, "query"),
+  incidentController.getStatusCounts,
 );
 
 incidentRouter.get(
