@@ -613,4 +613,27 @@ export function registerIncidentOpenApi(): void {
       },
     },
   });
+
+  // ── Diagnostics & Health Endpoints ─────────────────────────────────────────
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/incidents/health",
+    tags: ["Incidents"],
+    summary: "Kiểm tra trạng thái hoạt động của Incident Service",
+    responses: {
+      200: {
+        description: "Dịch vụ hoạt động bình thường",
+        content: {
+          "application/json": {
+            schema: z.object({
+              status: z.string().openapi({ example: "ok" }),
+              service: z.string().openapi({ example: "incident-service" }),
+              timestamp: z.string().datetime(),
+              uptime: z.number(),
+            }),
+          },
+        },
+      },
+    },
+  });
 }
