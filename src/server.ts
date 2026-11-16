@@ -8,7 +8,7 @@ try {
   // Graceful fallback if not supported in runtime
 }
 
-import incidentApp from "./incident.app";
+import incidentApp, { defaultAiVisionConsumer } from "./incident.app";
 import { envConfig } from "./config/env.config";
 import { incidentPrisma } from "./database/incident.client";
 
@@ -29,6 +29,7 @@ export const server = incidentApp.listen(PORT, () => {
   console.log(
     `[Incident Service] ✅ Listening for incidents, evidences and lifecycle transitions on port ${PORT}`,
   );
+  void defaultAiVisionConsumer.start();
 });
 
 let isShuttingDown = false;
@@ -67,7 +68,8 @@ export async function handleIncidentShutdown(signal: string): Promise<void> {
       });
     });
 
-    // 3. Disconnect database client
+    // 3. Stop Kafka consumer & disconnect database client
+    await defaultAiVisionConsumer.stop().catch(() => {});
     await incidentPrisma.$disconnect().catch((err: unknown) => {
       console.warn(
         "[Incident Service] Error disconnecting incidentPrisma:",

@@ -52,6 +52,14 @@ const envSchema = z
      * Bắt buộc cấu hình trong production khi deploy đằng sau Traefik.
      */
     GATEWAY_INTERNAL_SECRET: z.string().default(""),
+    INTERNAL_SERVICE_TOKEN: z.string().default(""),
+    KAFKA_ENABLED: z.string().default("false"),
+    PPE_KAFKA_BROKERS: z
+      .string()
+      .default(process.env.KAFKA_BROKERS || "localhost:9092"),
+    KAFKA_TOPIC_VIOLATION_DETECTED: z
+      .string()
+      .default("ppe.violation.detected"),
 
     // ── CORS ─────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: z.string().default("*"),
@@ -292,6 +300,27 @@ const envSchema = z
         "GATEWAY_INTERNAL_SECRET phải có độ dài tối thiểu 32 ký tự khi được cấu hình trong môi trường production",
       path: ["GATEWAY_INTERNAL_SECRET"],
     },
+  )
+  .refine(
+    (env) => {
+      if (env.NODE_ENV !== "production") return true;
+      if (
+        typeof env.INTERNAL_SERVICE_TOKEN === "string" &&
+        env.INTERNAL_SERVICE_TOKEN.trim().length > 0
+      ) {
+        const trimmed = env.INTERNAL_SERVICE_TOKEN.trim();
+        return (
+          trimmed.length >= 32 &&
+          !trimmed.toLowerCase().includes("change_me")
+        );
+      }
+      return true;
+    },
+    {
+      message:
+        "INTERNAL_SERVICE_TOKEN phải có độ dài tối thiểu 32 ký tự và không dùng giá trị mẫu trong môi trường production",
+      path: ["INTERNAL_SERVICE_TOKEN"],
+    },
   );
 
 const _parsed = envSchema.safeParse(process.env);
@@ -403,6 +432,17 @@ export const envConfig = {
      * Empty string → kiểm tra bị tắt (monolith / dev mode).
      */
     internalSecret: _env.GATEWAY_INTERNAL_SECRET || "",
+  },
+  internalService: {
+    /** Token M2M dùng để xác thực các tích hợp nội bộ (AI Vision Service). */
+    token: _env.INTERNAL_SERVICE_TOKEN || "",
+  },
+  kafka: {
+    enabled: _env.KAFKA_ENABLED === "true",
+    brokers: _env.PPE_KAFKA_BROKERS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    violationTopic: _env.KAFKA_TOPIC_VIOLATION_DETECTED,
   },
   cors: {
     allowedOrigins: _env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()),

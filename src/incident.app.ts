@@ -11,6 +11,8 @@ import {
   incidentRouter,
   evidenceRouter,
 } from "./modules/incident/incident.route";
+import { aiVisionRouter } from "./modules/integration/ai-vision.route";
+import { defaultAiVisionConsumer } from "./modules/integration/ai-vision.consumer";
 import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
 import {
   requestIdMiddleware,
@@ -141,8 +143,26 @@ incidentApp.use(
   evidenceRouter,
 );
 
+incidentApp.use(
+  "/api/v1/integration/ai-vision",
+  rateLimitMiddleware,
+  maintenanceGuard(),
+  requireGatewayOrigin,
+  aiVisionRouter,
+);
+incidentApp.use(
+  "/integration/ai-vision",
+  rateLimitMiddleware,
+  maintenanceGuard(),
+  requireGatewayOrigin,
+  aiVisionRouter,
+);
+
+incidentApp.locals.aiVisionConsumer = defaultAiVisionConsumer;
+
 // 5. Error & 404 Handlers
 incidentApp.use(notFoundMiddleware);
 incidentApp.use(errorMiddleware);
 
+export { defaultAiVisionConsumer };
 export default incidentApp;
