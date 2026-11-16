@@ -372,7 +372,11 @@ export class AiVisionIntegrationService {
         : {}),
     };
 
-    const created = await this.incidents.createIncident(createDto, SYSTEM_ACTOR_UUID);
+    const created = await this.incidents.createIncident(
+      createDto,
+      SYSTEM_ACTOR_UUID,
+      { cameraCode: camera.code },
+    );
     return {
       incident: created,
       violationId,

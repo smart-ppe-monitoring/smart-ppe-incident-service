@@ -1,6 +1,7 @@
 import {
   IncidentRepository,
   incidentRepository,
+  isDeduplicatedIncident,
 } from "./incident.repository";
 import {
   EvidenceStorageService,
@@ -61,7 +62,11 @@ export class IncidentService {
   }
 
   // ── Incident CRUD Operations ───────────────────────────────────────────────
-  async createIncident(data: CreateIncidentDto, actorId: string) {
+  async createIncident(
+    data: CreateIncidentDto,
+    actorId: string,
+    context?: { cameraCode?: string; siteName?: string },
+  ) {
     if (data.initialEvidence?.storageKey && data.siteId) {
       const parts = data.initialEvidence.storageKey.split("/");
       if (parts.length >= 3 && isUuid(parts[1]) && parts[1] !== data.siteId) {
@@ -86,6 +91,11 @@ export class IncidentService {
 
     const created = await this.repository.createIncident(data, actorId);
 
+    // Chống bắn trùng thông báo realtime/email nếu violationId đã tồn tại (idempotency hit)
+    if (isDeduplicatedIncident(created)) {
+      return created;
+    }
+
     // Tự động phát thông báo sự cố vi phạm PPE cho cán bộ an toàn (Task BE-08)
     // SEC-29: Sử dụng hằng số tập trung EVIDENCE_TYPE thay vì hardcoded magic strings và enum trạng thái sự cố
     const snapshotEv = created.evidences?.find(
@@ -95,17 +105,28 @@ export class IncidentService {
       (e: any) => e.evidenceType === EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
     );
 
+    const snapshotDownloadUrl = snapshotEv?.storageKey
+      ? `/api/v1/incidents/evidences/${snapshotEv.id}/download`
+      : undefined;
+    const referenceDownloadUrl = refEv?.storageKey
+      ? `/api/v1/incidents/evidences/${refEv.id}/download`
+      : undefined;
+
     this.notification
       .dispatchIncidentNotification({
         incidentId: created.id,
         siteId: created.siteId,
         cameraId: created.cameraId,
+        cameraCode: context?.cameraCode,
+        siteName: context?.siteName,
         violationType: created.violationType,
         severity: created.severity,
         description: created.description || undefined,
         detectedAt: created.detectedAt,
-        snapshotUrl: snapshotEv?.storageKey ? `/api/v1/incidents/evidences/${snapshotEv.id}/download` : undefined,
-        referenceSnapshotUrl: refEv?.storageKey ? `/api/v1/incidents/evidences/${refEv.id}/download` : undefined,
+        snapshotUrl: snapshotDownloadUrl,
+        referenceSnapshotUrl: referenceDownloadUrl,
+        evidenceUrl: snapshotDownloadUrl,
+        referenceEvidenceUrl: referenceDownloadUrl,
       })
       .catch((err) => {
         console.warn(

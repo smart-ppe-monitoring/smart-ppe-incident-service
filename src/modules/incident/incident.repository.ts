@@ -84,6 +84,21 @@ export function normalizeActorUuid(
   );
 }
 
+const deduplicatedIncidents = new WeakSet<object>();
+
+export function markDeduplicatedIncident<T extends object>(incident: T): T {
+  deduplicatedIncidents.add(incident);
+  return incident;
+}
+
+export function isDeduplicatedIncident(incident: unknown): boolean {
+  return Boolean(
+    incident &&
+      typeof incident === "object" &&
+      deduplicatedIncidents.has(incident),
+  );
+}
+
 export class IncidentRepository {
   private readonly db: IncidentPrismaClient;
 
@@ -108,7 +123,7 @@ export class IncidentRepository {
               },
             });
             if (existing) {
-              return serializeIncident(existing);
+              return markDeduplicatedIncident(serializeIncident(existing));
             }
           }
 
@@ -258,7 +273,7 @@ export class IncidentRepository {
           },
         });
         if (existing) {
-          return serializeIncident(existing);
+          return markDeduplicatedIncident(serializeIncident(existing));
         }
       }
       throw error;

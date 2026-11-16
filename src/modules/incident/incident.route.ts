@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { incidentController } from "./incident.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
+import { requireInternalServiceToken } from "../../middlewares/internal-auth.middleware";
 import { requirePermission } from "../../middlewares/permission.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { uploadImageMiddleware } from "../../middlewares/upload.middleware";
@@ -60,6 +61,14 @@ incidentRouter.get(
   requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
   validate(incidentStatusCountsQuerySchema, "query"),
   incidentController.getStatusCounts,
+);
+
+// Internal M2M endpoint cho Notification Service tra cứu sự cố (MUST stay before /:id param route)
+incidentRouter.get(
+  "/internal/:id",
+  requireInternalServiceToken,
+  validate(incidentIdParamSchema, "params"),
+  incidentController.findIncidentById,
 );
 
 incidentRouter.get(

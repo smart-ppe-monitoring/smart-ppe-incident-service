@@ -21,6 +21,10 @@ import {
   resolveEvidenceStorageKey,
 } from "../src/modules/integration/ai-vision.service";
 import { AiVisionKafkaConsumer } from "../src/modules/integration/ai-vision.consumer";
+import { HttpNotificationServiceClient } from "../src/modules/incident/notification-client.interface";
+import { IncidentService } from "../src/modules/incident/incident.service";
+import { markDeduplicatedIncident } from "../src/modules/incident/incident.repository";
+import { incidentRouter } from "../src/modules/incident/incident.route";
 
 describe("AI Vision Incident Ingestion (HTTP + Kafka)", () => {
   it("should enforce fail-closed M2M internal service token middleware", () => {
@@ -449,5 +453,107 @@ describe("AI Vision Incident Ingestion (HTTP + Kafka)", () => {
     });
 
     await assert.rejects(() => transientConsumer.handleMessageValue(payload));
+  });
+
+  it("should dispatch realtime HTTP notification via HttpNotificationServiceClient with M2M headers and skip deduplicated hits", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const client = new HttpNotificationServiceClient({
+      baseUrl: "http://notification-service:8889",
+      internalToken: "m2m-secret-token",
+      gatewaySecret: "gw-secret-key",
+      fetcher: (async (url: string | URL | Request, init?: RequestInit) => {
+        requests.push({ url: String(url), init: init || {} });
+        return new Response(
+          JSON.stringify({ success: true, data: { dispatchedCount: 2 } }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    });
+
+    const incId = "0199a001-0000-7000-8000-000000000777";
+    const evId = "0199a001-0000-7000-8000-000000000888";
+    const siteId = "0199a001-0000-7000-8000-0000000000aa";
+    const cameraId = "0199a001-0000-7000-8000-000000000001";
+
+    let callIndex = 0;
+    const mockRepo = {
+      createIncident: async (dto: any) => {
+        callIndex++;
+        const record = {
+          id: incId,
+          siteId: dto.siteId,
+          cameraId: dto.cameraId,
+          violationType: dto.violationType,
+          severity: dto.severity || "HIGH",
+          description: dto.description || "Thiếu mũ bảo hộ",
+          detectedAt: new Date("2026-11-16T10:00:00.000Z"),
+          evidences: [
+            {
+              id: evId,
+              evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+              storageKey: `evidences/${siteId}/CAM-01/snap.jpg`,
+            },
+          ],
+        };
+        return callIndex === 2 ? markDeduplicatedIncident(record) : record;
+      },
+    } as any;
+
+    const svc = new IncidentService(mockRepo, undefined, client);
+
+    // Lần 1: Sự cố mới -> phải gọi Notification Service kèm M2M token + cameraCode + evidenceUrl
+    await svc.createIncident(
+      {
+        siteId,
+        cameraId,
+        violationId: "0199a001-0000-7000-8000-000000000999",
+        violationType: "NO_HELMET",
+        detectedAt: new Date("2026-11-16T10:00:00.000Z"),
+      },
+      "00000000-0000-0000-0000-000000000000",
+      { cameraCode: "CAM-01" },
+    );
+
+    // Chờ microtask async fire-and-forget dispatch
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(requests.length, 1);
+    assert.equal(
+      requests[0].url,
+      "http://notification-service:8889/api/v1/notifications/internal/trigger-incident",
+    );
+    const reqHeaders = requests[0].init.headers as Record<string, string>;
+    assert.equal(reqHeaders[GATEWAY_HEADERS.INTERNAL_SERVICE_TOKEN], "m2m-secret-token");
+    assert.equal(reqHeaders[GATEWAY_HEADERS.INTERNAL_SECRET], "gw-secret-key");
+    const parsedBody = JSON.parse(String(requests[0].init.body));
+    assert.equal(parsedBody.incidentId, incId);
+    assert.equal(parsedBody.cameraCode, "CAM-01");
+    assert.equal(parsedBody.evidenceUrl, `/api/v1/incidents/evidences/${evId}/download`);
+
+    // Lần 2: Duplicate violationId (markDeduplicatedIncident) -> không bắn trùng thông báo
+    await svc.createIncident(
+      {
+        siteId,
+        cameraId,
+        violationId: "0199a001-0000-7000-8000-000000000999",
+        violationType: "NO_HELMET",
+        detectedAt: new Date("2026-11-16T10:00:00.000Z"),
+      },
+      "00000000-0000-0000-0000-000000000000",
+      { cameraCode: "CAM-01" },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(requests.length, 1);
+  });
+
+  it("must mount GET /internal/:id before GET /:id on incidentRouter", () => {
+    const getPaths = (incidentRouter.stack || [])
+      .filter((layer: any) => layer.route?.methods?.get)
+      .map((layer: any) => layer.route.path);
+
+    const internalIdx = getPaths.indexOf("/internal/:id");
+    const idIdx = getPaths.indexOf("/:id");
+    assert.ok(internalIdx !== -1, "GET /internal/:id route must exist");
+    assert.ok(idIdx !== -1, "GET /:id route must exist");
+    assert.ok(internalIdx < idIdx, "GET /internal/:id must precede /:id");
   });
 });
