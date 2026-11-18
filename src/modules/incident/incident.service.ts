@@ -18,8 +18,11 @@ import {
   CreateIncidentDto,
   UpdateIncidentDto,
   IncidentQueryDto,
+  IncidentUserContext,
   IncidentStatusCountsQueryDto,
   IncidentStatusCountsDto,
+  IncidentItemDto,
+  PaginatedResultDto,
   ReviewIncidentDto,
   BatchReviewIncidentDto,
   BatchReviewResultDto,
@@ -150,31 +153,96 @@ export class IncidentService {
     return incident;
   }
 
-  async getAllIncidents(query: IncidentQueryDto) {
+  /**
+   * Trích xuất danh sách siteId được phép truy cập cho người dùng non-admin.
+   * Trả về `undefined` cho ADMIN hoặc ngữ cảnh nội bộ không truyền userContext.
+   */
+  private resolveAllowedSiteIds(
+    userContext?: IncidentUserContext,
+  ): string[] | undefined {
     if (
-      query.search?.trim() &&
+      !userContext ||
+      userContext.role === ROLES.ADMIN ||
+      userContext.role === "ADMIN"
+    ) {
+      return undefined;
+    }
+
+    return Array.from(
+      new Set([
+        ...(userContext.siteId ? [userContext.siteId] : []),
+        ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
+      ]),
+    );
+  }
+
+  private emptyIncidentPage(
+    query: IncidentQueryDto,
+  ): PaginatedResultDto<IncidentItemDto> {
+    return {
+      data: [],
+      meta: {
+        total: 0,
+        page: query.page || 1,
+        limit: query.limit || 20,
+        totalPages: 0,
+      },
+    };
+  }
+
+  async getAllIncidents(
+    query: IncidentQueryDto,
+    userContext?: IncidentUserContext,
+  ): Promise<PaginatedResultDto<IncidentItemDto>> {
+    let effectiveQuery = query;
+
+    if (query.assignedToMe) {
+      if (!userContext?.id) {
+        throw new AppError(
+          "Không xác định được người dùng hiện tại để lọc việc được giao",
+          401,
+          ERROR_CODE.UNAUTHORIZED,
+        );
+      }
+      if (query.assignedTo && query.assignedTo !== userContext.id) {
+        return this.emptyIncidentPage(query);
+      }
+      effectiveQuery = {
+        ...query,
+        assignedTo: userContext.id,
+      };
+    }
+
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+    if (siteFilter !== undefined) {
+      if (siteFilter.length === 0) {
+        return this.emptyIncidentPage(effectiveQuery);
+      }
+      if (
+        effectiveQuery.siteId &&
+        !siteFilter.includes(effectiveQuery.siteId)
+      ) {
+        return this.emptyIncidentPage(effectiveQuery);
+      }
+    }
+
+    if (
+      effectiveQuery.search?.trim() &&
       typeof this.repository.searchFts === "function"
     ) {
-      return this.repository.searchFts(query);
+      return this.repository.searchFts(effectiveQuery, siteFilter);
     }
-    return this.repository.findAllIncidents(query);
+    return this.repository.findAllIncidents(effectiveQuery, siteFilter);
   }
 
   async getStatusCounts(
     query: IncidentStatusCountsQueryDto,
-    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+    userContext?: IncidentUserContext,
   ): Promise<IncidentStatusCountsDto> {
-    let siteFilter: string[] | undefined;
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
 
-    if (userContext && userContext.role !== ROLES.ADMIN) {
-      const allowedSiteIds = Array.from(
-        new Set([
-          ...(userContext.siteId ? [userContext.siteId] : []),
-          ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
-        ]),
-      );
-
-      if (allowedSiteIds.length === 0) {
+    if (siteFilter !== undefined) {
+      if (siteFilter.length === 0) {
         return {
           total: 0,
           pendingReview: 0,
@@ -183,7 +251,7 @@ export class IncidentService {
         };
       }
 
-      if (query.siteId && !allowedSiteIds.includes(query.siteId)) {
+      if (query.siteId && !siteFilter.includes(query.siteId)) {
         return {
           total: 0,
           pendingReview: 0,
@@ -191,8 +259,6 @@ export class IncidentService {
           resolved: 0,
         };
       }
-
-      siteFilter = allowedSiteIds;
     }
 
     return this.repository.getStatusCounts(query, siteFilter);
@@ -271,31 +337,22 @@ export class IncidentService {
   async batchReviewIncidents(
     dto: BatchReviewIncidentDto,
     actorId: string,
-    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+    userContext?: IncidentUserContext,
   ): Promise<BatchReviewResultDto> {
     const uniqueIds = Array.from(new Set(dto.ids));
-    let siteFilter: string[] | undefined;
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
 
-    if (userContext && userContext.role !== ROLES.ADMIN) {
-      const allowedSiteIds = [
-        ...(userContext.siteId ? [userContext.siteId] : []),
-        ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
-      ];
-
-      if (allowedSiteIds.length === 0) {
-        return {
-          total: uniqueIds.length,
-          updatedCount: 0,
-          action: dto.action,
-          newStatus:
-            dto.action === "CONFIRM"
-              ? INCIDENT_STATUS.CONFIRMED
-              : INCIDENT_STATUS.DISMISSED,
-          updatedIds: [],
-        };
-      }
-
-      siteFilter = allowedSiteIds;
+    if (siteFilter !== undefined && siteFilter.length === 0) {
+      return {
+        total: uniqueIds.length,
+        updatedCount: 0,
+        action: dto.action,
+        newStatus:
+          dto.action === "CONFIRM"
+            ? INCIDENT_STATUS.CONFIRMED
+            : INCIDENT_STATUS.DISMISSED,
+        updatedIds: [],
+      };
     }
 
     return this.repository.batchTransitionStatus({

@@ -72,12 +72,21 @@ export interface UpdateIncidentDto {
   description?: string | null;
 }
 
+export interface IncidentUserContext {
+  id?: string;
+  role?: string;
+  siteId?: string;
+  siteIds?: string[];
+}
+
 export interface IncidentQueryDto {
   page?: number;
   limit?: number;
   search?: string;
   siteId?: string;
   cameraId?: string;
+  assignedTo?: string;
+  assignedToMe?: boolean;
   violationType?: ViolationType;
   severity?: IncidentSeverity;
   status?: IncidentStatus;
@@ -141,6 +150,15 @@ export interface IncidentEvidenceItemDto {
   metadata?: CreateEvidenceMetadataDto | null;
 }
 
+export interface IncidentAssignmentItemDto {
+  id: string;
+  incidentId: string;
+  assignedTo: string;
+  assignedAt: Date;
+  unassignedAt?: Date | null;
+  status: AssignmentStatus | string;
+}
+
 export interface IncidentItemDto {
   id: string;
   siteId: string;
@@ -155,6 +173,7 @@ export interface IncidentItemDto {
   createdAt: Date;
   updatedAt: Date;
   evidences?: IncidentEvidenceItemDto[];
+  assignments?: IncidentAssignmentItemDto[];
   _count?: {
     evidences: number;
     comments: number;

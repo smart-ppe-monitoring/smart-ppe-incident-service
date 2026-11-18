@@ -203,6 +203,13 @@ export const incidentQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   siteId: uuidSchema.optional(),
   cameraId: uuidSchema.optional(),
+  assignedTo: uuidSchema.optional(),
+  assignedToMe: z
+    .union([
+      z.boolean(),
+      z.enum(["true", "false"]).transform((val) => val === "true"),
+    ])
+    .optional(),
   violationType: z
     .enum([
       VIOLATION_TYPE.NO_HELMET,

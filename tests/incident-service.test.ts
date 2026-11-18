@@ -39,6 +39,7 @@ import {
   createEvidenceSchema,
 } from "../src/modules/incident/incident.validation";
 import { IncidentService } from "../src/modules/incident/incident.service";
+import { IncidentController } from "../src/modules/incident/incident.controller";
 import {
   IncidentRepository,
   serializeEvidence,
@@ -1797,6 +1798,312 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
         assert.strictEqual(ticketError.statusCode, 400);
         assert.strictEqual(ticketError.code, ERROR_CODE.VALIDATION_ERROR);
       });
+    });
+  });
+
+  // ── 8. List Incidents: Site Scoping, Active Assignments & assignedToMe ─────
+  describe("8. Incident List Scoping (siteIds), Assignments Include & Filter", () => {
+    const siteA = "11111111-1111-4111-8111-111111111111";
+    const siteB = "22222222-2222-4222-8222-222222222222";
+    const userId = "33333333-3333-4333-8333-333333333333";
+    const otherUserId = "44444444-4444-4444-8444-444444444444";
+
+    it("should parse assignedTo and assignedToMe query params accurately in incidentQuerySchema", () => {
+      const parsedTrue = incidentQuerySchema.parse({
+        assignedToMe: "true",
+        assignedTo: userId,
+      });
+      assert.strictEqual(parsedTrue.assignedToMe, true);
+      assert.strictEqual(parsedTrue.assignedTo, userId);
+
+      const parsedFalse = incidentQuerySchema.parse({
+        assignedToMe: "false",
+      });
+      assert.strictEqual(parsedFalse.assignedToMe, false);
+
+      const invalidUuid = incidentQuerySchema.safeParse({
+        assignedTo: "not-a-uuid",
+      });
+      assert.strictEqual(invalidUuid.success, false);
+
+      const invalidBool = incidentQuerySchema.safeParse({
+        assignedToMe: "maybe",
+      });
+      assert.strictEqual(invalidBool.success, false);
+    });
+
+    it("should pass req.user from IncidentController.findAllIncidents to service.getAllIncidents", async () => {
+      let capturedQuery: any = null;
+      let capturedUser: any = null;
+      const mockService = {
+        getAllIncidents: async (query: any, userContext: any) => {
+          capturedQuery = query;
+          capturedUser = userContext;
+          return {
+            data: [],
+            meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+          };
+        },
+      } as unknown as IncidentService;
+
+      const controller = new IncidentController(mockService);
+      const req: any = {
+        query: { page: 1, limit: 20, assignedToMe: true },
+        user: { id: userId, role: ROLES.SAFETY_OFFICER, siteIds: [siteA] },
+      };
+      let jsonBody: any = null;
+      const res: any = {
+        json: (body: any) => {
+          jsonBody = body;
+        },
+      };
+
+      await controller.findAllIncidents(req, res, () => {});
+      assert.strictEqual(capturedQuery.assignedToMe, true);
+      assert.strictEqual(capturedUser.id, userId);
+      assert.deepStrictEqual(capturedUser.siteIds, [siteA]);
+      assert.strictEqual(jsonBody.success, true);
+    });
+
+    it("should enforce siteFilter for non-admin users and bypass for ADMIN in service.getAllIncidents", async () => {
+      let receivedSiteFilter: any = "UNSET";
+      const mockRepo = {
+        findAllIncidents: async (_query: any, siteFilter?: string[]) => {
+          receivedSiteFilter = siteFilter;
+          return {
+            data: [],
+            meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+          };
+        },
+      } as unknown as IncidentRepository;
+
+      const service = new IncidentService(mockRepo);
+
+      await service.getAllIncidents(
+        { page: 1, limit: 20 },
+        { id: userId, role: ROLES.SAFETY_OFFICER, siteId: siteA, siteIds: [siteA, siteB] },
+      );
+      assert.deepStrictEqual(receivedSiteFilter, [siteA, siteB]);
+
+      await service.getAllIncidents(
+        { page: 1, limit: 20 },
+        { id: userId, role: ROLES.ADMIN, siteIds: [siteA] },
+      );
+      assert.strictEqual(receivedSiteFilter, undefined);
+    });
+
+    it("should return empty paginated result immediately when non-admin has no sites or queries unauthorized siteId", async () => {
+      let repoCalled = false;
+      const mockRepo = {
+        findAllIncidents: async () => {
+          repoCalled = true;
+          return {
+            data: [],
+            meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+          };
+        },
+      } as unknown as IncidentRepository;
+
+      const service = new IncidentService(mockRepo);
+
+      const emptyNoSites = await service.getAllIncidents(
+        { page: 2, limit: 10 },
+        { id: userId, role: ROLES.SAFETY_OFFICER, siteIds: [] },
+      );
+      assert.strictEqual(repoCalled, false);
+      assert.deepStrictEqual(emptyNoSites, {
+        data: [],
+        meta: { total: 0, page: 2, limit: 10, totalPages: 0 },
+      });
+
+      const emptyUnauthorizedSite = await service.getAllIncidents(
+        { page: 1, limit: 20, siteId: siteB },
+        { id: userId, role: ROLES.SAFETY_MANAGER, siteIds: [siteA] },
+      );
+      assert.strictEqual(repoCalled, false);
+      assert.strictEqual(emptyUnauthorizedSite.data.length, 0);
+      assert.strictEqual(emptyUnauthorizedSite.meta.total, 0);
+    });
+
+    it("should resolve assignedToMe to userContext.id and guard conflicting/missing user", async () => {
+      let passedQuery: any = null;
+      const mockRepo = {
+        searchFts: async (query: any) => {
+          passedQuery = query;
+          return {
+            data: [],
+            meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+          };
+        },
+        findAllIncidents: async (query: any) => {
+          passedQuery = query;
+          return {
+            data: [],
+            meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+          };
+        },
+      } as unknown as IncidentRepository;
+
+      const service = new IncidentService(mockRepo);
+
+      await service.getAllIncidents(
+        { assignedToMe: true, search: "helmet" },
+        { id: userId, role: ROLES.SAFETY_OFFICER, siteIds: [siteA] },
+      );
+      assert.strictEqual(passedQuery.assignedTo, userId);
+
+      await assert.rejects(
+        async () => {
+          await service.getAllIncidents({ assignedToMe: true }, { role: ROLES.SAFETY_OFFICER, siteIds: [siteA] });
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 401);
+          assert.strictEqual(err.code, ERROR_CODE.UNAUTHORIZED);
+          return true;
+        },
+      );
+
+      const conflictRes = await service.getAllIncidents(
+        { assignedToMe: true, assignedTo: otherUserId },
+        { id: userId, role: ROLES.SAFETY_OFFICER, siteIds: [siteA] },
+      );
+      assert.strictEqual(conflictRes.data.length, 0);
+    });
+
+    it("should include ACTIVE assignments and apply siteFilter + assignedTo in repository.findAllIncidents", async () => {
+      let capturedCountArgs: any = null;
+      let capturedFindManyArgs: any = null;
+
+      const mockDb = {
+        incident: {
+          count: mock.fn(async (args: any) => {
+            capturedCountArgs = args;
+            return 1;
+          }),
+          findMany: mock.fn(async (args: any) => {
+            capturedFindManyArgs = args;
+            return [
+              {
+                id: "55555555-5555-4555-8555-555555555555",
+                siteId: siteA,
+                cameraId: "66666666-6666-4666-8666-666666666666",
+                violationType: VIOLATION_TYPE.NO_HELMET,
+                severity: INCIDENT_SEVERITY.HIGH,
+                status: INCIDENT_STATUS.CONFIRMED,
+                detectedAt: new Date(),
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                evidences: [],
+                assignments: [
+                  {
+                    id: "77777777-7777-4777-8777-777777777777",
+                    incidentId: "55555555-5555-4555-8555-555555555555",
+                    assignedTo: userId,
+                    assignedAt: new Date(),
+                    unassignedAt: null,
+                    status: ASSIGNMENT_STATUS.ACTIVE,
+                  },
+                ],
+                _count: { evidences: 0, comments: 0, assignments: 1 },
+              },
+            ];
+          }),
+        },
+      };
+
+      const repo = new IncidentRepository(mockDb);
+      const res = await repo.findAllIncidents(
+        { page: 1, limit: 20, assignedTo: userId },
+        [siteA, siteB],
+      );
+
+      assert.deepStrictEqual(capturedCountArgs.where.siteId, { in: [siteA, siteB] });
+      assert.deepStrictEqual(capturedFindManyArgs.where.assignments, {
+        some: {
+          assignedTo: userId,
+          status: ASSIGNMENT_STATUS.ACTIVE,
+        },
+      });
+      assert.deepStrictEqual(capturedFindManyArgs.include.assignments, {
+        where: { status: ASSIGNMENT_STATUS.ACTIVE },
+        orderBy: { assignedAt: "desc" },
+      });
+      assert.strictEqual(res.data.length, 1);
+      assert.strictEqual(res.data[0].assignments?.length, 1);
+      assert.strictEqual(res.data[0].assignments?.[0].assignedTo, userId);
+    });
+
+    it("should apply siteFilter, assignedTo, include active assignments, and preserve siteFilter on FTS fallback", async () => {
+      let capturedFindManyArgs: any = null;
+      const capturedQueries: string[] = [];
+
+      const mockDb = {
+        $queryRaw: mock.fn(async (sqlObj: any) => {
+          const text = Array.isArray(sqlObj?.strings) ? sqlObj.strings.join("?") : String(sqlObj);
+          capturedQueries.push(text);
+          if (text.includes("COUNT")) {
+            return [{ count: BigInt(1) }];
+          }
+          return [{ id: "55555555-5555-4555-8555-555555555555", rank: 0.9 }];
+        }),
+        incident: {
+          findMany: mock.fn(async (args: any) => {
+            capturedFindManyArgs = args;
+            return [
+              {
+                id: "55555555-5555-4555-8555-555555555555",
+                siteId: siteA,
+                evidences: [],
+                assignments: [
+                  {
+                    id: "77777777-7777-4777-8777-777777777777",
+                    incidentId: "55555555-5555-4555-8555-555555555555",
+                    assignedTo: userId,
+                    assignedAt: new Date(),
+                    unassignedAt: null,
+                    status: ASSIGNMENT_STATUS.ACTIVE,
+                  },
+                ],
+                _count: { evidences: 0, comments: 0, assignments: 1 },
+              },
+            ];
+          }),
+        },
+      };
+
+      const repo = new IncidentRepository(mockDb);
+      const res = await repo.searchFts(
+        { page: 1, limit: 20, search: "helmet", assignedTo: userId },
+        [siteA],
+      );
+
+      assert.strictEqual(res.data.length, 1);
+      assert.strictEqual(res.data[0].assignments?.[0].assignedTo, userId);
+      assert.deepStrictEqual(capturedFindManyArgs.include.assignments, {
+        where: { status: ASSIGNMENT_STATUS.ACTIVE },
+        orderBy: { assignedAt: "desc" },
+      });
+      assert.ok(capturedQueries.some((q) => q.includes("SELECT") && q.includes("FROM incidents i")));
+
+      // Verify siteFilter propagates on FTS syntax fallback
+      const mockErrDb = {
+        $queryRaw: mock.fn(async () => {
+          throw new Error("syntax error in tsquery");
+        }),
+      };
+      const fallbackRepo = new IncidentRepository(mockErrDb);
+      let fallbackSiteFilter: any = null;
+      fallbackRepo.findAllIncidents = mock.fn(async (_q: any, sf?: string[]) => {
+        fallbackSiteFilter = sf;
+        return {
+          data: [],
+          meta: { page: 1, limit: 20, total: 0, totalPages: 0 },
+        };
+      }) as any;
+
+      await fallbackRepo.searchFts({ search: "& | !", page: 1, limit: 20 }, [siteA, siteB]);
+      assert.deepStrictEqual(fallbackSiteFilter, [siteA, siteB]);
     });
   });
 });

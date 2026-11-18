@@ -60,6 +60,20 @@ export function serializeIncident<T extends Record<string, unknown>>(incident: T
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SYSTEM_ACTOR_UUID = "00000000-0000-0000-0000-000000000000";
 
+const INCIDENT_LIST_INCLUDE = {
+  evidences: {
+    take: 1,
+    include: { metadata: true },
+  },
+  assignments: {
+    where: { status: ASSIGNMENT_STATUS.ACTIVE },
+    orderBy: { assignedAt: "desc" as const },
+  },
+  _count: {
+    select: { evidences: true, comments: true, assignments: true },
+  },
+};
+
 export function normalizeActorUuid(
   actorId?: string | null,
   allowSystemFallback: boolean = false,
@@ -332,6 +346,7 @@ export class IncidentRepository {
 
   async findAllIncidents(
     query: IncidentQueryDto,
+    siteFilter?: string[],
   ): Promise<PaginatedResultDto<IncidentItemDto>> {
     const page = query.page || 1;
     const limit = query.limit || 20;
@@ -340,10 +355,25 @@ export class IncidentRepository {
     const where: IncidentPrisma.IncidentWhereInput = {};
 
     if (query.siteId) {
-      where.siteId = query.siteId;
+      if (!siteFilter || siteFilter.includes(query.siteId)) {
+        where.siteId = query.siteId;
+      } else {
+        where.siteId = { in: [] };
+      }
+    } else if (siteFilter) {
+      where.siteId = { in: siteFilter };
     }
+
     if (query.cameraId) {
       where.cameraId = query.cameraId;
+    }
+    if (query.assignedTo) {
+      where.assignments = {
+        some: {
+          assignedTo: query.assignedTo,
+          status: ASSIGNMENT_STATUS.ACTIVE,
+        },
+      };
     }
     if (query.violationType) {
       where.violationType = query.violationType;
@@ -381,15 +411,7 @@ export class IncidentRepository {
         skip: pagination.skip,
         take: pagination.take,
         orderBy,
-        include: {
-          evidences: {
-            take: 1,
-            include: { metadata: true },
-          },
-          _count: {
-            select: { evidences: true, comments: true, assignments: true },
-          },
-        },
+        include: INCIDENT_LIST_INCLUDE,
       }),
     ]);
 
@@ -472,15 +494,16 @@ export class IncidentRepository {
    */
   async searchFts(
     query: IncidentQueryDto,
+    siteFilter?: string[],
   ): Promise<PaginatedResultDto<IncidentItemDto>> {
     const search = query.search?.trim();
     if (!search) {
-      return this.findAllIncidents(query);
+      return this.findAllIncidents(query, siteFilter);
     }
 
     const tsQuery = buildTsQuery(search, "prefix");
     if (!tsQuery) {
-      return this.findAllIncidents(query);
+      return this.findAllIncidents(query, siteFilter);
     }
 
     const page = query.page || 1;
@@ -492,11 +515,37 @@ export class IncidentRepository {
     ];
 
     if (query.siteId) {
-      whereConditions.push(IncidentPrisma.sql`i.site_id = ${query.siteId}::uuid`);
+      if (!siteFilter || siteFilter.includes(query.siteId)) {
+        whereConditions.push(IncidentPrisma.sql`i.site_id = ${query.siteId}::uuid`);
+      } else {
+        whereConditions.push(IncidentPrisma.sql`FALSE`);
+      }
+    } else if (siteFilter) {
+      if (siteFilter.length === 0) {
+        whereConditions.push(IncidentPrisma.sql`FALSE`);
+      } else {
+        whereConditions.push(
+          IncidentPrisma.sql`i.site_id IN (${IncidentPrisma.join(
+            siteFilter.map((id) => IncidentPrisma.sql`${id}::uuid`),
+            ", ",
+          )})`,
+        );
+      }
     }
 
     if (query.cameraId) {
       whereConditions.push(IncidentPrisma.sql`i.camera_id = ${query.cameraId}::uuid`);
+    }
+
+    if (query.assignedTo) {
+      whereConditions.push(
+        IncidentPrisma.sql`EXISTS (
+          SELECT 1 FROM incident_assignments ia
+          WHERE ia.incident_id = i.id
+            AND ia.assigned_to = ${query.assignedTo}::uuid
+            AND ia.status = ${ASSIGNMENT_STATUS.ACTIVE}
+        )`,
+      );
     }
 
     if (query.violationType) {
@@ -573,15 +622,7 @@ export class IncidentRepository {
 
       const items = await this.db.incident.findMany({
         where: { id: { in: ids } },
-        include: {
-          evidences: {
-            take: 1,
-            include: { metadata: true },
-          },
-          _count: {
-            select: { evidences: true, comments: true, assignments: true },
-          },
-        },
+        include: INCIDENT_LIST_INCLUDE,
       });
 
       const itemMap = new Map(items.map((item) => [item.id, item]));
@@ -600,7 +641,7 @@ export class IncidentRepository {
         `[IncidentRepository] Lỗi cú pháp FTS tsquery cho truy vấn '${search}', fallback sang findAllIncidents:`,
         err?.message || err,
       );
-      return this.findAllIncidents(query);
+      return this.findAllIncidents(query, siteFilter);
     }
   }
 

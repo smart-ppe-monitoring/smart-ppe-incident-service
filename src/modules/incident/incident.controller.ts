@@ -73,7 +73,7 @@ export class IncidentController {
   ) => {
     try {
       const query = req.query;
-      const result = await this.service.getAllIncidents(query);
+      const result = await this.service.getAllIncidents(query, req.user);
       res.json({
         success: true,
         data: result.data,
