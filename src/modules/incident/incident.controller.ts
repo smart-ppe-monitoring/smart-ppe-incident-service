@@ -5,6 +5,7 @@ import {
   UpdateIncidentDto,
   IncidentQueryDto,
   IncidentStatusCountsQueryDto,
+  FeedbackDatasetQueryDto,
   ReviewIncidentDto,
   BatchReviewIncidentDto,
   ResolveIncidentDto,
@@ -94,6 +95,23 @@ export class IncidentController {
       res.json({
         success: true,
         data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getFeedbackDataset = async (
+    req: Request<unknown, unknown, unknown, FeedbackDatasetQueryDto>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const result = await this.service.getFeedbackDataset(req.query, req.user);
+      res.json({
+        success: true,
+        data: result.data,
+        meta: result.meta,
       });
     } catch (error) {
       next(error);

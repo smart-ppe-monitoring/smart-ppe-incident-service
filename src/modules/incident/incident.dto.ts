@@ -85,8 +85,11 @@ export interface IncidentQueryDto {
   search?: string;
   siteId?: string;
   cameraId?: string;
+  cameraIds?: string[];
   assignedTo?: string;
   assignedToMe?: boolean;
+  includeAssignments?: boolean;
+  includeAllAssignments?: boolean;
   violationType?: ViolationType;
   severity?: IncidentSeverity;
   status?: IncidentStatus;
@@ -167,6 +170,8 @@ export interface IncidentItemDto {
   violationType: ViolationType;
   severity: IncidentSeverity;
   status: IncidentStatus;
+  confidence?: number | null;
+  trackId?: number | null;
   detectedAt: Date;
   resolvedAt?: Date | null;
   description?: string | null;
@@ -184,6 +189,7 @@ export interface IncidentItemDto {
 export interface IncidentStatusCountsQueryDto {
   siteId?: string;
   cameraId?: string;
+  cameraIds?: string[];
   fromDate?: Date | string;
   toDate?: Date | string;
   startDate?: Date | string;
@@ -193,7 +199,43 @@ export interface IncidentStatusCountsQueryDto {
 export interface IncidentStatusCountsDto {
   total: number;
   pendingReview: number;
+  confirmed: number;
   critical: number;
   resolved: number;
+  closed: number;
+  dismissed: number;
+}
+
+export type FeedbackDatasetLabel = "TRUE_VIOLATION" | "FALSE_ALARM";
+
+export interface FeedbackDatasetQueryDto {
+  page?: number;
+  limit?: number;
+  siteId?: string;
+  cameraId?: string;
+  cameraIds?: string[];
+  violationType?: ViolationType;
+  label?: FeedbackDatasetLabel;
+  fromDate?: Date | string;
+  toDate?: Date | string;
+  startDate?: Date | string;
+  endDate?: Date | string;
+}
+
+export interface FeedbackDatasetItemDto {
+  incidentId: string;
+  label: FeedbackDatasetLabel;
+  status: IncidentStatus | string;
+  reviewReason: string | null;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+  violationType: ViolationType | string;
+  confidence: number | null;
+  trackId: number | null;
+  cameraId: string;
+  siteId: string;
+  detectedAt: Date;
+  snapshotStorageKey: string | null;
+  aiDetections: Record<string, unknown> | null;
 }
 

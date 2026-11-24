@@ -15,6 +15,25 @@ export const uuidSchema = z
   .trim()
   .regex(UUID_REGEX, "ID phải là định dạng UUID hợp lệ");
 
+const booleanQuerySchema = z
+  .union([
+    z.boolean(),
+    z.enum(["true", "false"]).transform((val) => val === "true"),
+  ])
+  .optional();
+
+const uuidListQuerySchema = z.preprocess((val) => {
+  if (val === undefined || val === null || val === "") return undefined;
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string") {
+    return val
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return val;
+}, z.array(uuidSchema).max(100, "Tối đa 100 cameraIds trong một truy vấn").optional());
+
 export const incidentIdParamSchema = z.object({
   id: uuidSchema,
 });
@@ -203,13 +222,11 @@ export const incidentQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   siteId: uuidSchema.optional(),
   cameraId: uuidSchema.optional(),
+  cameraIds: uuidListQuerySchema,
   assignedTo: uuidSchema.optional(),
-  assignedToMe: z
-    .union([
-      z.boolean(),
-      z.enum(["true", "false"]).transform((val) => val === "true"),
-    ])
-    .optional(),
+  assignedToMe: booleanQuerySchema,
+  includeAssignments: booleanQuerySchema,
+  includeAllAssignments: booleanQuerySchema,
   violationType: z
     .enum([
       VIOLATION_TYPE.NO_HELMET,
@@ -246,6 +263,28 @@ export const incidentQuerySchema = z.object({
 export const incidentStatusCountsQuerySchema = z.object({
   siteId: uuidSchema.optional(),
   cameraId: uuidSchema.optional(),
+  cameraIds: uuidListQuerySchema,
+  fromDate: z.coerce.date().optional(),
+  toDate: z.coerce.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+});
+
+export const feedbackDatasetQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  siteId: uuidSchema.optional(),
+  cameraId: uuidSchema.optional(),
+  cameraIds: uuidListQuerySchema,
+  violationType: z
+    .enum([
+      VIOLATION_TYPE.NO_HELMET,
+      VIOLATION_TYPE.NO_VEST,
+      VIOLATION_TYPE.RESTRICTED_AREA,
+      VIOLATION_TYPE.MULTI_VIOLATION,
+    ])
+    .optional(),
+  label: z.enum(["TRUE_VIOLATION", "FALSE_ALARM"]).optional(),
   fromDate: z.coerce.date().optional(),
   toDate: z.coerce.date().optional(),
   startDate: z.coerce.date().optional(),

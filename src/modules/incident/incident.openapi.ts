@@ -4,6 +4,7 @@ import {
   updateIncidentSchema,
   incidentQuerySchema,
   incidentStatusCountsQuerySchema,
+  feedbackDatasetQuerySchema,
   incidentIdParamSchema,
   batchReviewIncidentsSchema,
   reviewIncidentSchema,
@@ -55,8 +56,11 @@ export function registerIncidentOpenApi(): void {
   const incidentStatusCountsDtoSchema = z.object({
     total: z.number().openapi({ example: 48, description: "Tổng số sự cố thỏa mãn bộ lọc" }),
     pendingReview: z.number().openapi({ example: 6, description: "Số sự cố đang chờ người dùng kiểm duyệt" }),
+    confirmed: z.number().openapi({ example: 5, description: "Số sự cố đã xác nhận vi phạm (CONFIRMED)" }),
     critical: z.number().openapi({ example: 5, description: "Số sự cố ở mức độ nghiêm trọng CRITICAL" }),
     resolved: z.number().openapi({ example: 37, description: "Số sự cố đã xử lý xong (RESOLVED hoặc CLOSED)" }),
+    closed: z.number().openapi({ example: 12, description: "Số sự cố đã đóng hồ sơ (CLOSED)" }),
+    dismissed: z.number().openapi({ example: 4, description: "Số sự cố đã bác bỏ cảnh báo sai (DISMISSED)" }),
   });
 
   const incidentStatusCountsResponseSchema = z.object({
@@ -157,7 +161,7 @@ export function registerIncidentOpenApi(): void {
     method: "get",
     path: "/incidents/status-counts",
     tags: ["Incidents"],
-    summary: "Thống kê số lượng sự cố theo trạng thái cho thẻ KPI (tổng số, chờ duyệt, nguy cấp, đã xử lý)",
+    summary: "Thống kê số lượng sự cố theo trạng thái cho thẻ KPI (tổng số, chờ duyệt, đã xác nhận, nguy cấp, đã xử lý, đã đóng, bác bỏ)",
     security: [{ BearerAuth: [] }],
     request: { query: incidentStatusCountsQuerySchema },
     responses: {
@@ -166,6 +170,34 @@ export function registerIncidentOpenApi(): void {
         content: {
           "application/json": {
             schema: incidentStatusCountsResponseSchema,
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/incidents/feedback-dataset",
+    tags: ["Incidents"],
+    summary: "Truy xuất tập mẫu phản hồi True Violation / False Alarm kèm ảnh & aiDetections phục vụ huấn luyện lại mô hình AI (D08)",
+    security: [{ BearerAuth: [] }],
+    request: { query: feedbackDatasetQuerySchema },
+    responses: {
+      200: {
+        description: "Lấy tập dữ liệu phản hồi AI thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.array(z.any()),
+              meta: z.object({
+                total: z.number(),
+                page: z.number(),
+                limit: z.number(),
+                totalPages: z.number(),
+              }),
+            }),
           },
         },
       },

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { incidentController } from "./incident.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { requireInternalServiceToken } from "../../middlewares/internal-auth.middleware";
-import { requirePermission } from "../../middlewares/permission.middleware";
+import { requirePermission, requireAnyPermission } from "../../middlewares/permission.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { uploadImageMiddleware } from "../../middlewares/upload.middleware";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
@@ -13,6 +13,7 @@ import {
   updateIncidentSchema,
   incidentQuerySchema,
   incidentStatusCountsQuerySchema,
+  feedbackDatasetQuerySchema,
   batchReviewIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
@@ -61,6 +62,17 @@ incidentRouter.get(
   requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
   validate(incidentStatusCountsQuerySchema, "query"),
   incidentController.getStatusCounts,
+);
+
+incidentRouter.get(
+  "/feedback-dataset",
+  authMiddleware,
+  requireAnyPermission(
+    PERMISSIONS.PPE_INCIDENT_READ,
+    PERMISSIONS.PPE_AI_METRICS_READ,
+  ),
+  validate(feedbackDatasetQuerySchema, "query"),
+  incidentController.getFeedbackDataset,
 );
 
 // Internal M2M endpoint cho Notification Service tra cứu sự cố (MUST stay before /:id param route)

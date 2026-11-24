@@ -1,13 +1,21 @@
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { IncidentRepository } from "../src/modules/incident/incident.repository";
+import {
+  IncidentRepository,
+  extractAiTelemetry,
+  serializeIncident,
+} from "../src/modules/incident/incident.repository";
 import { IncidentService } from "../src/modules/incident/incident.service";
+import { incidentRouter } from "../src/modules/incident/incident.route";
 import {
   batchReviewIncidentsSchema,
   incidentQuerySchema,
   incidentStatusCountsQuerySchema,
+  feedbackDatasetQuerySchema,
 } from "../src/modules/incident/incident.validation";
 import {
+  ASSIGNMENT_STATUS,
+  EVIDENCE_TYPE,
   INCIDENT_STATUS,
   VIOLATION_TYPE,
 } from "../src/common/constants/incident.constant";
@@ -424,13 +432,16 @@ describe("Batch Review & Date Filter Suite", () => {
     });
 
     describe("Repository Execution", () => {
-      it("should execute 4 parallel count queries with correct filters", async () => {
+      it("should execute 7 parallel count queries with correct filters", async () => {
         const capturedCalls: any[] = [];
         const mockPrisma = {
           incident: {
             count: mock.fn(async (args: any) => {
               capturedCalls.push(args);
               if (args.where?.status === INCIDENT_STATUS.PENDING_REVIEW) return 6;
+              if (args.where?.status === INCIDENT_STATUS.CONFIRMED) return 4;
+              if (args.where?.status === INCIDENT_STATUS.CLOSED) return 12;
+              if (args.where?.status === INCIDENT_STATUS.DISMISSED) return 3;
               if (args.where?.severity === "CRITICAL") return 5;
               if (args.where?.status?.in) return 37;
               return 48; // total
@@ -455,11 +466,14 @@ describe("Batch Review & Date Filter Suite", () => {
         assert.deepStrictEqual(result, {
           total: 48,
           pendingReview: 6,
+          confirmed: 4,
           critical: 5,
           resolved: 37,
+          closed: 12,
+          dismissed: 3,
         });
 
-        assert.strictEqual(capturedCalls.length, 4);
+        assert.strictEqual(capturedCalls.length, 7);
         for (const call of capturedCalls) {
           assert.strictEqual(call.where.siteId, siteA);
           assert.strictEqual(call.where.cameraId, validUuid1);
@@ -484,7 +498,7 @@ describe("Batch Review & Date Filter Suite", () => {
 
         await repo.getStatusCounts({ siteId: disallowedSite }, [siteA]);
 
-        assert.strictEqual(capturedCalls.length, 4);
+        assert.strictEqual(capturedCalls.length, 7);
         for (const call of capturedCalls) {
           assert.deepStrictEqual(call.where.siteId, { in: [] });
         }
@@ -555,8 +569,11 @@ describe("Batch Review & Date Filter Suite", () => {
         assert.deepStrictEqual(res, {
           total: 0,
           pendingReview: 0,
+          confirmed: 0,
           critical: 0,
           resolved: 0,
+          closed: 0,
+          dismissed: 0,
         });
         assert.strictEqual(mockRepo.getStatusCounts.mock.callCount(), 0);
       });
@@ -581,8 +598,11 @@ describe("Batch Review & Date Filter Suite", () => {
         assert.deepStrictEqual(res, {
           total: 0,
           pendingReview: 0,
+          confirmed: 0,
           critical: 0,
           resolved: 0,
+          closed: 0,
+          dismissed: 0,
         });
         assert.strictEqual(mockRepo.getStatusCounts.mock.callCount(), 0);
       });
@@ -592,7 +612,15 @@ describe("Batch Review & Date Filter Suite", () => {
         const mockRepo = {
           getStatusCounts: mock.fn(async (_query: any, siteFilter?: string[]) => {
             repoPassedFilter = siteFilter;
-            return { total: 3, pendingReview: 1, critical: 0, resolved: 2 };
+            return {
+              total: 3,
+              pendingReview: 1,
+              confirmed: 0,
+              critical: 0,
+              resolved: 2,
+              closed: 0,
+              dismissed: 0,
+            };
           }),
         };
 
@@ -608,6 +636,228 @@ describe("Batch Review & Date Filter Suite", () => {
         assert.strictEqual(res.total, 3);
         assert.deepStrictEqual(repoPassedFilter, [siteA, siteB]);
       });
+    });
+  });
+
+  describe("5. Issue #2: AI Telemetry Normalization, includeAllAssignments, cameraIds & Feedback Dataset", () => {
+    it("extractAiTelemetry & serializeIncident extract real confidence and trackId (with storageKey fallback and null when absent)", () => {
+      const withMeta = serializeIncident({
+        id: validUuid1,
+        violationType: VIOLATION_TYPE.NO_HELMET,
+        evidences: [
+          {
+            evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+            storageKey: `evidences/${siteA}/cam-1/2026/11/24/${validUuid1}/snap.jpg`,
+            fileSize: BigInt(2048),
+            metadata: {
+              aiDetections: {
+                violation: { type: "NO_HELMET", confidence: 0.91234 },
+                allDetections: [
+                  { class: "NO_HELMET", confidence: 0.91234, track_id: 14 },
+                  { class: "PERSON", confidence: 0.98, track_id: 7 },
+                ],
+              },
+            },
+          },
+        ],
+      });
+      assert.strictEqual(withMeta.confidence, 0.9123);
+      assert.strictEqual(withMeta.trackId, 14);
+
+      const withStorageFallback = extractAiTelemetry({
+        violationType: VIOLATION_TYPE.NO_VEST,
+        evidences: [
+          {
+            evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+            storageKey: `evidences/${siteA}/cam-1/2026/11/24/ev_track23_snap.jpg`,
+            metadata: null,
+          },
+        ],
+      });
+      assert.strictEqual(withStorageFallback.confidence, null);
+      assert.strictEqual(withStorageFallback.trackId, 23);
+
+      const emptyTelemetry = serializeIncident({
+        id: validUuid2,
+        violationType: VIOLATION_TYPE.NO_HELMET,
+        evidences: [],
+      });
+      assert.strictEqual(emptyTelemetry.confidence, null);
+      assert.strictEqual(emptyTelemetry.trackId, null);
+    });
+
+    it("incidentQuerySchema parses includeAllAssignments, includeAssignments, and cameraIds (CSV or array)", () => {
+      const parsedCsv = incidentQuerySchema.parse({
+        includeAssignments: "true",
+        includeAllAssignments: "true",
+        cameraIds: `${validUuid1}, ${validUuid2}`,
+      });
+      assert.strictEqual(parsedCsv.includeAssignments, true);
+      assert.strictEqual(parsedCsv.includeAllAssignments, true);
+      assert.deepStrictEqual(parsedCsv.cameraIds, [validUuid1, validUuid2]);
+
+      const parsedArr = incidentQuerySchema.parse({
+        includeAssignments: "false",
+        cameraIds: [validUuid3],
+      });
+      assert.strictEqual(parsedArr.includeAssignments, false);
+      assert.deepStrictEqual(parsedArr.cameraIds, [validUuid3]);
+    });
+
+    it("findAllIncidents supports includeAllAssignments=true (returning COMPLETED assignments) and cameraIds filter", async () => {
+      let capturedFindManyArgs: any = null;
+      const mockDb = {
+        incident: {
+          count: mock.fn(async () => 1),
+          findMany: mock.fn(async (args: any) => {
+            capturedFindManyArgs = args;
+            return [
+              {
+                id: validUuid1,
+                siteId: siteA,
+                cameraId: validUuid2,
+                violationType: VIOLATION_TYPE.NO_HELMET,
+                evidences: [],
+                assignments: [
+                  { id: validUuid3, assignedTo: actorId, status: ASSIGNMENT_STATUS.COMPLETED },
+                ],
+              },
+            ];
+          }),
+        },
+      };
+
+      const repo = new IncidentRepository(mockDb);
+      const res = await repo.findAllIncidents({
+        includeAllAssignments: true,
+        assignedTo: actorId,
+        cameraIds: [validUuid2, validUuid3],
+      });
+
+      assert.deepStrictEqual(capturedFindManyArgs.where.cameraId, {
+        in: [validUuid2, validUuid3],
+      });
+      assert.deepStrictEqual(capturedFindManyArgs.where.assignments, {
+        some: { assignedTo: actorId },
+      });
+      assert.deepStrictEqual(capturedFindManyArgs.include.assignments, {
+        orderBy: { assignedAt: "desc" },
+      });
+      assert.strictEqual(res.data[0].assignments?.length, 1);
+      assert.strictEqual(res.data[0].assignments?.[0].status, ASSIGNMENT_STATUS.COMPLETED);
+    });
+
+    it("mounts GET /feedback-dataset before GET /:id and validates feedbackDatasetQuerySchema", () => {
+      const stack = incidentRouter.stack || [];
+      const feedbackIdx = stack.findIndex(
+        (layer: any) => layer.route?.path === "/feedback-dataset" && layer.route?.methods?.get,
+      );
+      const paramIdx = stack.findIndex(
+        (layer: any) => layer.route?.path === "/:id" && layer.route?.methods?.get,
+      );
+      assert.ok(feedbackIdx !== -1, "GET /feedback-dataset must exist");
+      assert.ok(paramIdx !== -1, "GET /:id must exist");
+      assert.ok(feedbackIdx < paramIdx, "GET /feedback-dataset must precede GET /:id");
+
+      const valid = feedbackDatasetQuerySchema.safeParse({
+        label: "FALSE_ALARM",
+        cameraIds: `${validUuid1},${validUuid2}`,
+        limit: "25",
+      });
+      assert.strictEqual(valid.success, true);
+      if (valid.success) {
+        assert.strictEqual(valid.data.label, "FALSE_ALARM");
+        assert.strictEqual(valid.data.limit, 25);
+        assert.deepStrictEqual(valid.data.cameraIds, [validUuid1, validUuid2]);
+      }
+
+      const invalid = feedbackDatasetQuerySchema.safeParse({ label: "UNKNOWN" });
+      assert.strictEqual(invalid.success, false);
+    });
+
+    it("findFeedbackDataset maps TRUE_VIOLATION / FALSE_ALARM with snapshotStorageKey, aiDetections, reviewReason, and enforces site scoping", async () => {
+      const reviewedAt = new Date("2026-11-24T09:00:00.000Z");
+      const mockDb = {
+        incident: {
+          count: mock.fn(async () => 2),
+          findMany: mock.fn(async () => [
+            {
+              id: validUuid1,
+              siteId: siteA,
+              cameraId: validUuid2,
+              violationType: VIOLATION_TYPE.NO_HELMET,
+              status: INCIDENT_STATUS.DISMISSED,
+              detectedAt: new Date("2026-11-24T08:00:00.000Z"),
+              statusHistory: [
+                {
+                  newStatus: INCIDENT_STATUS.DISMISSED,
+                  reason: "Ánh nắng chói phản chiếu nhầm nón trắng",
+                  changedBy: actorId,
+                  changedAt: reviewedAt,
+                },
+              ],
+              evidences: [
+                {
+                  evidenceType: EVIDENCE_TYPE.SNAPSHOT,
+                  storageKey: `evidences/${siteA}/${validUuid2}/2026/11/24/${validUuid1}/snap.jpg`,
+                  metadata: {
+                    aiDetections: {
+                      violation: { type: "NO_HELMET", confidence: 0.78 },
+                      allDetections: [{ class: "NO_HELMET", confidence: 0.78, track_id: 5 }],
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              id: validUuid3,
+              siteId: siteA,
+              cameraId: validUuid2,
+              violationType: VIOLATION_TYPE.NO_VEST,
+              status: INCIDENT_STATUS.CLOSED,
+              detectedAt: new Date("2026-11-24T08:15:00.000Z"),
+              statusHistory: [
+                {
+                  newStatus: INCIDENT_STATUS.CONFIRMED,
+                  reason: "Xác nhận công nhân thiếu áo phản quang",
+                  changedBy: actorId,
+                  changedAt: reviewedAt,
+                },
+              ],
+              evidences: [],
+            },
+          ]),
+        },
+      };
+
+      const repo = new IncidentRepository(mockDb);
+      const service = new IncidentService(repo);
+
+      const res = await service.getFeedbackDataset(
+        { page: 1, limit: 50 },
+        { id: actorId, role: ROLES.SAFETY_MANAGER, siteId: siteA },
+      );
+
+      assert.strictEqual(res.meta.total, 2);
+      assert.strictEqual(res.data[0].label, "FALSE_ALARM");
+      assert.strictEqual(res.data[0].reviewReason, "Ánh nắng chói phản chiếu nhầm nón trắng");
+      assert.strictEqual(res.data[0].confidence, 0.78);
+      assert.strictEqual(res.data[0].trackId, 5);
+      assert.ok(res.data[0].snapshotStorageKey?.endsWith("/snap.jpg"));
+      assert.ok(res.data[0].aiDetections);
+
+      assert.strictEqual(res.data[1].label, "TRUE_VIOLATION");
+      assert.strictEqual(res.data[1].confidence, null);
+      assert.strictEqual(res.data[1].trackId, null);
+      assert.strictEqual(res.data[1].snapshotStorageKey, null);
+
+      // Fail-closed khi non-admin không có site
+      const emptyRes = await service.getFeedbackDataset(
+        { page: 1, limit: 50 },
+        { id: actorId, role: ROLES.SAFETY_OFFICER, siteIds: [] },
+      );
+      assert.strictEqual(emptyRes.data.length, 0);
+      assert.strictEqual(emptyRes.meta.total, 0);
     });
   });
 });

@@ -21,6 +21,8 @@ import {
   IncidentUserContext,
   IncidentStatusCountsQueryDto,
   IncidentStatusCountsDto,
+  FeedbackDatasetQueryDto,
+  FeedbackDatasetItemDto,
   IncidentItemDto,
   PaginatedResultDto,
   ReviewIncidentDto,
@@ -246,8 +248,11 @@ export class IncidentService {
         return {
           total: 0,
           pendingReview: 0,
+          confirmed: 0,
           critical: 0,
           resolved: 0,
+          closed: 0,
+          dismissed: 0,
         };
       }
 
@@ -255,13 +260,49 @@ export class IncidentService {
         return {
           total: 0,
           pendingReview: 0,
+          confirmed: 0,
           critical: 0,
           resolved: 0,
+          closed: 0,
+          dismissed: 0,
         };
       }
     }
 
     return this.repository.getStatusCounts(query, siteFilter);
+  }
+
+  async getFeedbackDataset(
+    query: FeedbackDatasetQueryDto,
+    userContext?: IncidentUserContext,
+  ): Promise<PaginatedResultDto<FeedbackDatasetItemDto>> {
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+    if (siteFilter !== undefined) {
+      if (siteFilter.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: query.page || 1,
+            limit: query.limit || 50,
+            totalPages: 0,
+          },
+        };
+      }
+      if (query.siteId && !siteFilter.includes(query.siteId)) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: query.page || 1,
+            limit: query.limit || 50,
+            totalPages: 0,
+          },
+        };
+      }
+    }
+
+    return this.repository.findFeedbackDataset(query, siteFilter);
   }
 
   async updateIncident(id: string, data: UpdateIncidentDto) {

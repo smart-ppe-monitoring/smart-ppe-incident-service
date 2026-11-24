@@ -17,6 +17,9 @@ import {
   IncidentQueryDto,
   IncidentStatusCountsQueryDto,
   IncidentStatusCountsDto,
+  FeedbackDatasetQueryDto,
+  FeedbackDatasetItemDto,
+  FeedbackDatasetLabel,
   CreateEvidenceDto,
   EvidenceQueryDto,
   CreateEvidenceAccessLogDto,
@@ -44,17 +47,156 @@ export function serializeEvidence<T extends Record<string, unknown>>(evidence: T
   return clone;
 }
 
+function normalizeConfidence(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (raw < 0 || raw > 1) return null;
+  return Math.round(raw * 10000) / 10000;
+}
+
+function normalizeTrackId(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+    return null;
+  }
+  return raw;
+}
+
+function matchesViolationClass(detClass: unknown, violationType: unknown): boolean {
+  if (typeof detClass !== "string") return false;
+  const cls = detClass.trim().toUpperCase();
+  const vt = typeof violationType === "string" ? violationType.trim().toUpperCase() : "";
+  if (vt === "NO_HELMET" && (cls === "NO_HELMET" || cls === "NO-HELMET" || cls === "NO_HARDHAT")) {
+    return true;
+  }
+  if (vt === "NO_VEST" && (cls === "NO_VEST" || cls === "NO-VEST" || cls === "NO_SAFETY_VEST")) {
+    return true;
+  }
+  if (vt === "RESTRICTED_AREA" && cls === "PERSON") {
+    return true;
+  }
+  return cls === "PERSON";
+}
+
+/**
+ * Trích xuất chuẩn hóa confidence (0..1) và trackId (int >= 0) từ evidence metadata.aiDetections
+ * hoặc fallback _track<N> trong storageKey/fileName (trả về null nếu không có, không hardcode).
+ */
+export function extractAiTelemetry(incident: Record<string, unknown>): {
+  confidence: number | null;
+  trackId: number | null;
+} {
+  let confidence = normalizeConfidence(incident.confidence);
+  let trackId = normalizeTrackId(incident.trackId);
+
+  const evidences = Array.isArray(incident.evidences) ? incident.evidences : [];
+  const orderedEvidences = [...evidences].sort((a: any, b: any) => {
+    const aSnap = a?.evidenceType === EVIDENCE_TYPE.SNAPSHOT ? 0 : 1;
+    const bSnap = b?.evidenceType === EVIDENCE_TYPE.SNAPSHOT ? 0 : 1;
+    return aSnap - bSnap;
+  });
+
+  for (const ev of orderedEvidences) {
+    if (!ev || typeof ev !== "object") continue;
+    const evObj = ev as Record<string, unknown>;
+    const metadata =
+      evObj.metadata && typeof evObj.metadata === "object"
+        ? (evObj.metadata as Record<string, unknown>)
+        : null;
+    const aiDetections =
+      metadata?.aiDetections && typeof metadata.aiDetections === "object"
+        ? (metadata.aiDetections as Record<string, unknown>)
+        : null;
+
+    if (aiDetections) {
+      const violationMeta =
+        aiDetections.violation && typeof aiDetections.violation === "object"
+          ? (aiDetections.violation as Record<string, unknown>)
+          : null;
+
+      if (confidence === null) {
+        confidence =
+          normalizeConfidence(violationMeta?.confidence) ??
+          normalizeConfidence(aiDetections.confidence);
+      }
+
+      if (trackId === null) {
+        trackId =
+          normalizeTrackId(aiDetections.trackId) ??
+          normalizeTrackId(aiDetections.track_id) ??
+          normalizeTrackId(violationMeta?.trackId) ??
+          normalizeTrackId(violationMeta?.track_id);
+      }
+
+      const rawList = Array.isArray(aiDetections.allDetections)
+        ? aiDetections.allDetections
+        : Array.isArray(aiDetections.detections)
+          ? aiDetections.detections
+          : [];
+
+      if (rawList.length > 0 && (confidence === null || trackId === null)) {
+        const prioritized = rawList.filter((d: any) =>
+          matchesViolationClass(d?.class, incident.violationType),
+        );
+        const candidates = prioritized.length > 0 ? prioritized : rawList;
+
+        if (confidence === null) {
+          let bestConf: number | null = null;
+          for (const det of candidates) {
+            const c = normalizeConfidence((det as any)?.confidence);
+            if (c !== null && (bestConf === null || c > bestConf)) {
+              bestConf = c;
+            }
+          }
+          confidence = bestConf;
+        }
+
+        if (trackId === null) {
+          for (const det of candidates) {
+            const tid =
+              normalizeTrackId((det as any)?.track_id) ??
+              normalizeTrackId((det as any)?.trackId);
+            if (tid !== null) {
+              trackId = tid;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (trackId === null) {
+      const pathCandidate =
+        (typeof evObj.storageKey === "string" && evObj.storageKey) ||
+        (typeof evObj.fileName === "string" && evObj.fileName) ||
+        "";
+      const match = pathCandidate.match(/(?:^|[_/-])track[_-]?(\d+)(?:$|[_.-])/i);
+      if (match) {
+        const parsed = Number(match[1]);
+        trackId = normalizeTrackId(parsed);
+      }
+    }
+
+    if (confidence !== null && trackId !== null) {
+      break;
+    }
+  }
+
+  return { confidence, trackId };
+}
+
 export function serializeIncident<T extends Record<string, unknown>>(incident: T): T {
   if (!incident || typeof incident !== "object") return incident;
-  const clone = { ...incident };
+  const clone: Record<string, unknown> = { ...incident };
   if (Array.isArray(clone.evidences)) {
-    (clone as Record<string, unknown>).evidences = clone.evidences.map((ev: unknown) =>
+    clone.evidences = clone.evidences.map((ev: unknown) =>
       typeof ev === "object" && ev !== null
         ? serializeEvidence(ev as Record<string, unknown>)
         : ev,
     );
   }
-  return clone;
+  const { confidence, trackId } = extractAiTelemetry(clone);
+  clone.confidence = confidence;
+  clone.trackId = trackId;
+  return clone as T;
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,6 +215,25 @@ const INCIDENT_LIST_INCLUDE = {
     select: { evidences: true, comments: true, assignments: true },
   },
 };
+
+function buildIncidentListInclude(query: Pick<IncidentQueryDto, "includeAssignments" | "includeAllAssignments">) {
+  if (query.includeAllAssignments === true) {
+    return {
+      evidences: INCIDENT_LIST_INCLUDE.evidences,
+      assignments: {
+        orderBy: { assignedAt: "desc" as const },
+      },
+      _count: INCIDENT_LIST_INCLUDE._count,
+    };
+  }
+  if (query.includeAssignments === false) {
+    return {
+      evidences: INCIDENT_LIST_INCLUDE.evidences,
+      _count: INCIDENT_LIST_INCLUDE._count,
+    };
+  }
+  return INCIDENT_LIST_INCLUDE;
+}
 
 export function normalizeActorUuid(
   actorId?: string | null,
@@ -364,14 +525,23 @@ export class IncidentRepository {
       where.siteId = { in: siteFilter };
     }
 
-    if (query.cameraId) {
+    if (query.cameraId && Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = query.cameraIds.includes(query.cameraId)
+        ? query.cameraId
+        : { in: [] };
+    } else if (query.cameraId) {
       where.cameraId = query.cameraId;
+    } else if (Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = { in: query.cameraIds };
     }
+
     if (query.assignedTo) {
       where.assignments = {
         some: {
           assignedTo: query.assignedTo,
-          status: ASSIGNMENT_STATUS.ACTIVE,
+          ...(query.includeAllAssignments === true
+            ? {}
+            : { status: ASSIGNMENT_STATUS.ACTIVE }),
         },
       };
     }
@@ -411,7 +581,7 @@ export class IncidentRepository {
         skip: pagination.skip,
         take: pagination.take,
         orderBy,
-        include: INCIDENT_LIST_INCLUDE,
+        include: buildIncidentListInclude(query),
       }),
     ]);
 
@@ -441,8 +611,14 @@ export class IncidentRepository {
       where.siteId = { in: siteFilter };
     }
 
-    if (query.cameraId) {
+    if (query.cameraId && Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = query.cameraIds.includes(query.cameraId)
+        ? query.cameraId
+        : { in: [] };
+    } else if (query.cameraId) {
       where.cameraId = query.cameraId;
+    } else if (Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = { in: query.cameraIds };
     }
 
     const fromDate = query.startDate || query.fromDate;
@@ -457,12 +633,26 @@ export class IncidentRepository {
       }
     }
 
-    const [total, pendingReview, critical, resolved] = await Promise.all([
+    const [
+      total,
+      pendingReview,
+      confirmed,
+      critical,
+      resolved,
+      closed,
+      dismissed,
+    ] = await Promise.all([
       this.db.incident.count({ where }),
       this.db.incident.count({
         where: {
           ...where,
           status: INCIDENT_STATUS.PENDING_REVIEW,
+        },
+      }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          status: INCIDENT_STATUS.CONFIRMED,
         },
       }),
       this.db.incident.count({
@@ -477,13 +667,167 @@ export class IncidentRepository {
           status: { in: [INCIDENT_STATUS.RESOLVED, INCIDENT_STATUS.CLOSED] },
         },
       }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          status: INCIDENT_STATUS.CLOSED,
+        },
+      }),
+      this.db.incident.count({
+        where: {
+          ...where,
+          status: INCIDENT_STATUS.DISMISSED,
+        },
+      }),
     ]);
 
     return {
       total,
       pendingReview,
+      confirmed,
       critical,
       resolved,
+      closed,
+      dismissed,
+    };
+  }
+
+  /**
+   * Truy xuất tập dữ liệu phản hồi Human Review (TRUE_VIOLATION / FALSE_ALARM) phục vụ phân tích & huấn luyện lại mô hình AI (D08.pdf)
+   */
+  async findFeedbackDataset(
+    query: FeedbackDatasetQueryDto,
+    siteFilter?: string[],
+  ): Promise<PaginatedResultDto<FeedbackDatasetItemDto>> {
+    const page = query.page || 1;
+    const limit = query.limit || 50;
+    const pagination = calculatePaginationSkip(page, limit);
+
+    const where: IncidentPrisma.IncidentWhereInput = {};
+
+    if (query.siteId) {
+      if (!siteFilter || siteFilter.includes(query.siteId)) {
+        where.siteId = query.siteId;
+      } else {
+        where.siteId = { in: [] };
+      }
+    } else if (siteFilter) {
+      where.siteId = { in: siteFilter };
+    }
+
+    if (query.cameraId && Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = query.cameraIds.includes(query.cameraId)
+        ? query.cameraId
+        : { in: [] };
+    } else if (query.cameraId) {
+      where.cameraId = query.cameraId;
+    } else if (Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      where.cameraId = { in: query.cameraIds };
+    }
+
+    if (query.violationType) {
+      where.violationType = query.violationType;
+    }
+
+    const fromDate = query.startDate || query.fromDate;
+    const toDate = query.endDate || query.toDate;
+    if (fromDate || toDate) {
+      where.detectedAt = {};
+      if (fromDate) where.detectedAt.gte = new Date(fromDate);
+      if (toDate) where.detectedAt.lte = new Date(toDate);
+    }
+
+    if (query.label === "FALSE_ALARM") {
+      where.OR = [
+        { status: INCIDENT_STATUS.DISMISSED },
+        {
+          status: INCIDENT_STATUS.CLOSED,
+          statusHistory: { some: { newStatus: INCIDENT_STATUS.DISMISSED } },
+        },
+      ];
+    } else if (query.label === "TRUE_VIOLATION") {
+      where.OR = [
+        { status: { in: [INCIDENT_STATUS.CONFIRMED, INCIDENT_STATUS.RESOLVED] } },
+        {
+          status: INCIDENT_STATUS.CLOSED,
+          statusHistory: { some: { newStatus: INCIDENT_STATUS.CONFIRMED } },
+        },
+      ];
+    } else {
+      where.status = {
+        in: [
+          INCIDENT_STATUS.CONFIRMED,
+          INCIDENT_STATUS.DISMISSED,
+          INCIDENT_STATUS.RESOLVED,
+          INCIDENT_STATUS.CLOSED,
+        ],
+      };
+    }
+
+    const [total, items] = await Promise.all([
+      this.db.incident.count({ where }),
+      this.db.incident.findMany({
+        where,
+        skip: pagination.skip,
+        take: pagination.take,
+        orderBy: { detectedAt: "desc" },
+        include: {
+          evidences: {
+            include: { metadata: true },
+            orderBy: { capturedAt: "desc" },
+          },
+          statusHistory: {
+            where: {
+              newStatus: { in: [INCIDENT_STATUS.CONFIRMED, INCIDENT_STATUS.DISMISSED] },
+            },
+            orderBy: { changedAt: "desc" },
+            take: 1,
+          },
+        },
+      }),
+    ]);
+
+    const data: FeedbackDatasetItemDto[] = items.map((item: any) => {
+      const serialized = serializeIncident(item) as any;
+      const reviewEntry = Array.isArray(serialized.statusHistory)
+        ? serialized.statusHistory[0]
+        : undefined;
+      const isFalseAlarm =
+        serialized.status === INCIDENT_STATUS.DISMISSED ||
+        reviewEntry?.newStatus === INCIDENT_STATUS.DISMISSED;
+      const label: FeedbackDatasetLabel = isFalseAlarm
+        ? "FALSE_ALARM"
+        : "TRUE_VIOLATION";
+
+      const evidences = Array.isArray(serialized.evidences)
+        ? serialized.evidences
+        : [];
+      const snapshotEv =
+        evidences.find((e: any) => e?.evidenceType === EVIDENCE_TYPE.SNAPSHOT) ||
+        evidences[0] ||
+        null;
+
+      return {
+        incidentId: serialized.id,
+        label,
+        status: serialized.status,
+        reviewReason: reviewEntry?.reason ?? null,
+        reviewedBy: reviewEntry?.changedBy ?? null,
+        reviewedAt: reviewEntry?.changedAt ?? null,
+        violationType: serialized.violationType,
+        confidence: serialized.confidence ?? null,
+        trackId: serialized.trackId ?? null,
+        cameraId: serialized.cameraId,
+        siteId: serialized.siteId,
+        detectedAt: serialized.detectedAt,
+        snapshotStorageKey: snapshotEv?.storageKey ?? null,
+        aiDetections: (snapshotEv?.metadata?.aiDetections as Record<string, unknown>) ?? null,
+      };
+    });
+
+    return {
+      data,
+      meta: formatPaginationMeta(pagination.page, pagination.limit, total),
     };
   }
 
@@ -533,18 +877,37 @@ export class IncidentRepository {
       }
     }
 
-    if (query.cameraId) {
+    if (query.cameraId && Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      if (query.cameraIds.includes(query.cameraId)) {
+        whereConditions.push(IncidentPrisma.sql`i.camera_id = ${query.cameraId}::uuid`);
+      } else {
+        whereConditions.push(IncidentPrisma.sql`FALSE`);
+      }
+    } else if (query.cameraId) {
       whereConditions.push(IncidentPrisma.sql`i.camera_id = ${query.cameraId}::uuid`);
+    } else if (Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      whereConditions.push(
+        IncidentPrisma.sql`i.camera_id IN (${IncidentPrisma.join(
+          query.cameraIds.map((id) => IncidentPrisma.sql`${id}::uuid`),
+          ", ",
+        )})`,
+      );
     }
 
     if (query.assignedTo) {
       whereConditions.push(
-        IncidentPrisma.sql`EXISTS (
-          SELECT 1 FROM incident_assignments ia
-          WHERE ia.incident_id = i.id
-            AND ia.assigned_to = ${query.assignedTo}::uuid
-            AND ia.status = ${ASSIGNMENT_STATUS.ACTIVE}
-        )`,
+        query.includeAllAssignments === true
+          ? IncidentPrisma.sql`EXISTS (
+              SELECT 1 FROM incident_assignments ia
+              WHERE ia.incident_id = i.id
+                AND ia.assigned_to = ${query.assignedTo}::uuid
+            )`
+          : IncidentPrisma.sql`EXISTS (
+              SELECT 1 FROM incident_assignments ia
+              WHERE ia.incident_id = i.id
+                AND ia.assigned_to = ${query.assignedTo}::uuid
+                AND ia.status = ${ASSIGNMENT_STATUS.ACTIVE}
+            )`,
       );
     }
 
@@ -622,7 +985,7 @@ export class IncidentRepository {
 
       const items = await this.db.incident.findMany({
         where: { id: { in: ids } },
-        include: INCIDENT_LIST_INCLUDE,
+        include: buildIncidentListInclude(query),
       });
 
       const itemMap = new Map(items.map((item) => [item.id, item]));
