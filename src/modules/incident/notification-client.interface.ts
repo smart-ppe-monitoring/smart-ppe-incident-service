@@ -18,8 +18,29 @@ export interface IncidentNotificationPayload {
   recipientUserIds?: string[];
 }
 
+export interface IncidentCommentNotificationPayload {
+  incidentId: string;
+  commentId?: string;
+  siteId?: string;
+  cameraId?: string;
+  cameraCode?: string;
+  siteName?: string;
+  violationType?: string;
+  authorId: string;
+  authorName?: string;
+  authorEmail?: string;
+  authorRole?: string;
+  comment: string;
+  assignedUserIds?: string[];
+  participantUserIds?: string[];
+  createdAt?: Date | string;
+}
+
 export interface NotificationService {
   dispatchIncidentNotification(payload: IncidentNotificationPayload): Promise<any>;
+  dispatchIncidentCommentNotification?(
+    payload: IncidentCommentNotificationPayload,
+  ): Promise<any>;
 }
 
 export interface HttpNotificationClientOptions {
@@ -57,35 +78,6 @@ export class HttpNotificationServiceClient implements NotificationService {
   }
 
   async dispatchIncidentNotification(payload: IncidentNotificationPayload) {
-    // Trong unit tests chạy offline mà không inject mock fetcher, bỏ qua gọi HTTP thật tránh lỗi kết nối
-    if (!this.customFetcher && isAutomatedTestRuntime()) {
-      return {
-        dispatched: false,
-        skipped: true,
-        incidentId: payload.incidentId,
-      };
-    }
-
-    const baseUrl = (
-      this.customBaseUrl ?? envConfig.notification.serviceUrl
-    ).replace(/\/+$/, "");
-    const internalToken = (
-      this.customInternalToken ?? envConfig.internalService.token
-    ).trim();
-    const gatewaySecret = (
-      this.customGatewaySecret ?? envConfig.gateway.internalSecret
-    ).trim();
-
-    if (!baseUrl || !internalToken) {
-      console.warn(
-        "[NotificationClient] NOTIFICATION_SERVICE_URL hoặc INTERNAL_SERVICE_TOKEN chưa cấu hình, bỏ qua phát cảnh báo realtime.",
-      );
-      return {
-        dispatched: false,
-        incidentId: payload.incidentId,
-      };
-    }
-
     const evidenceUrl = payload.evidenceUrl || payload.snapshotUrl;
     const referenceEvidenceUrl =
       payload.referenceEvidenceUrl || payload.referenceSnapshotUrl;
@@ -110,6 +102,86 @@ export class HttpNotificationServiceClient implements NotificationService {
         : {}),
     };
 
+    return this.postInternal(
+      "/api/v1/notifications/internal/trigger-incident",
+      payload.incidentId,
+      requestBody,
+    );
+  }
+
+  async dispatchIncidentCommentNotification(
+    payload: IncidentCommentNotificationPayload,
+  ) {
+    const requestBody = {
+      incidentId: payload.incidentId,
+      ...(payload.commentId ? { commentId: payload.commentId } : {}),
+      ...(payload.siteId ? { siteId: payload.siteId } : {}),
+      ...(payload.cameraId ? { cameraId: payload.cameraId } : {}),
+      ...(payload.cameraCode ? { cameraCode: payload.cameraCode } : {}),
+      ...(payload.siteName ? { siteName: payload.siteName } : {}),
+      ...(payload.violationType ? { violationType: payload.violationType } : {}),
+      authorId: payload.authorId,
+      ...(payload.authorName ? { authorName: payload.authorName } : {}),
+      ...(payload.authorEmail ? { authorEmail: payload.authorEmail } : {}),
+      ...(payload.authorRole ? { authorRole: payload.authorRole } : {}),
+      comment: payload.comment,
+      ...(payload.assignedUserIds !== undefined
+        ? { assignedUserIds: payload.assignedUserIds }
+        : {}),
+      ...(payload.participantUserIds !== undefined
+        ? { participantUserIds: payload.participantUserIds }
+        : {}),
+      ...(payload.createdAt
+        ? {
+            createdAt:
+              payload.createdAt instanceof Date
+                ? payload.createdAt.toISOString()
+                : payload.createdAt,
+          }
+        : {}),
+    };
+
+    return this.postInternal(
+      "/api/v1/notifications/internal/trigger-incident-comment",
+      payload.incidentId,
+      requestBody,
+    );
+  }
+
+  private async postInternal(
+    path: string,
+    incidentId: string,
+    requestBody: Record<string, unknown>,
+  ) {
+    // Trong unit tests chạy offline mà không inject mock fetcher, bỏ qua gọi HTTP thật tránh lỗi kết nối
+    if (!this.customFetcher && isAutomatedTestRuntime()) {
+      return {
+        dispatched: false,
+        skipped: true,
+        incidentId,
+      };
+    }
+
+    const baseUrl = (
+      this.customBaseUrl ?? envConfig.notification.serviceUrl
+    ).replace(/\/+$/, "");
+    const internalToken = (
+      this.customInternalToken ?? envConfig.internalService.token
+    ).trim();
+    const gatewaySecret = (
+      this.customGatewaySecret ?? envConfig.gateway.internalSecret
+    ).trim();
+
+    if (!baseUrl || !internalToken) {
+      console.warn(
+        "[NotificationClient] NOTIFICATION_SERVICE_URL hoặc INTERNAL_SERVICE_TOKEN chưa cấu hình, bỏ qua phát cảnh báo realtime.",
+      );
+      return {
+        dispatched: false,
+        incidentId,
+      };
+    }
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -120,15 +192,12 @@ export class HttpNotificationServiceClient implements NotificationService {
     }
 
     const fetcher = this.customFetcher || fetch;
-    const response = await fetcher(
-      `${baseUrl}/api/v1/notifications/internal/trigger-incident`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      },
-    );
+    const response = await fetcher(`${baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
@@ -140,7 +209,7 @@ export class HttpNotificationServiceClient implements NotificationService {
     const result = await response.json().catch(() => ({}));
     return {
       dispatched: true,
-      incidentId: payload.incidentId,
+      incidentId,
       data: (result as any)?.data ?? result,
     };
   }

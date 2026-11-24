@@ -481,9 +481,62 @@ export class IncidentService {
     id: string,
     dto: CreateIncidentCommentDto,
     actorId: string,
+    actorContext?: { email?: string; role?: string; fullName?: string },
   ) {
-    await this.getIncidentById(id);
-    return this.repository.addComment(id, actorId, dto.comment);
+    const incident = await this.getIncidentById(id);
+    const createdComment = await this.repository.addComment(
+      id,
+      actorId,
+      dto.comment,
+    );
+
+    const assignedUserIds = Array.from(
+      new Set(
+        (incident.assignments || [])
+          .filter(
+            (a: any) =>
+              typeof a?.assignedTo === "string" &&
+              isUuid(a.assignedTo) &&
+              a.status !== "COMPLETED",
+          )
+          .map((a: any) => a.assignedTo as string),
+      ),
+    );
+
+    const participantUserIds = Array.from(
+      new Set(
+        (incident.comments || [])
+          .filter((c: any) => typeof c?.userId === "string" && isUuid(c.userId))
+          .map((c: any) => c.userId as string),
+      ),
+    );
+
+    if (typeof this.notification.dispatchIncidentCommentNotification === "function") {
+      this.notification
+        .dispatchIncidentCommentNotification({
+          incidentId: incident.id,
+          commentId: createdComment?.id,
+          siteId: incident.siteId,
+          cameraId: incident.cameraId,
+          violationType: incident.violationType,
+          authorId: actorId,
+          ...(actorContext?.fullName ? { authorName: actorContext.fullName } : {}),
+          ...(actorContext?.email ? { authorEmail: actorContext.email } : {}),
+          ...(actorContext?.role ? { authorRole: actorContext.role } : {}),
+          comment: dto.comment,
+          assignedUserIds,
+          participantUserIds,
+          createdAt: createdComment?.createdAt || new Date(),
+        })
+        .catch((err) => {
+          console.warn(
+            "[IncidentService] Không thể phát thông báo bình luận sự cố:",
+            err?.message || err,
+          );
+        });
+    }
+
+    return createdComment;
   }
 
   async getIncidentComments(id: string) {

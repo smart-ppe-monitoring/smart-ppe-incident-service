@@ -40,6 +40,7 @@ import {
 } from "../src/modules/incident/incident.validation";
 import { IncidentService } from "../src/modules/incident/incident.service";
 import { IncidentController } from "../src/modules/incident/incident.controller";
+import { HttpNotificationServiceClient } from "../src/modules/incident/notification-client.interface";
 import {
   IncidentRepository,
   serializeEvidence,
@@ -2104,6 +2105,112 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
 
       await fallbackRepo.searchFts({ search: "& | !", page: 1, limit: 20 }, [siteA, siteB]);
       assert.deepStrictEqual(fallbackSiteFilter, [siteA, siteB]);
+    });
+  });
+
+  describe("Incident Comment M2M Notification Trigger", () => {
+    const incidentId = "0194e1e0-a43b-7341-9426-38290f6da867";
+    const siteId = "0194e1e0-a43b-7341-9426-38290f6da111";
+    const cameraId = "0194e1e0-a43b-7341-9426-38290f6da222";
+    const authorId = "0194e1e0-a43b-7341-9426-38290f6da001";
+    const activeOfficerId = "0194e1e0-a43b-7341-9426-38290f6da002";
+    const oldOfficerId = "0194e1e0-a43b-7341-9426-38290f6da003";
+    const priorParticipantId = "0194e1e0-a43b-7341-9426-38290f6da004";
+
+    it("HttpNotificationServiceClient.dispatchIncidentCommentNotification posts M2M request with internal token and gateway secret", async () => {
+      let calledUrl = "";
+      let calledHeaders: Record<string, string> = {};
+      let calledBody: any = null;
+
+      const client = new HttpNotificationServiceClient({
+        baseUrl: "http://notification-service:8889",
+        internalToken: "m2m-secret-token",
+        gatewaySecret: "gw-secret",
+        fetcher: (async (url: any, init: any) => {
+          calledUrl = String(url);
+          calledHeaders = init.headers;
+          calledBody = JSON.parse(init.body);
+          return new Response(JSON.stringify({ success: true, data: { dispatchedCount: 2 } }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          });
+        }) as typeof fetch,
+      });
+
+      const res = await client.dispatchIncidentCommentNotification({
+        incidentId,
+        siteId,
+        authorId,
+        authorEmail: "manager@ppe.local",
+        comment: "Đã kiểm tra xong chưa?",
+        assignedUserIds: [activeOfficerId],
+        participantUserIds: [priorParticipantId],
+      });
+
+      assert.strictEqual(calledUrl, "http://notification-service:8889/api/v1/notifications/internal/trigger-incident-comment");
+      assert.strictEqual(calledHeaders[GATEWAY_HEADERS.INTERNAL_SERVICE_TOKEN], "m2m-secret-token");
+      assert.strictEqual(calledHeaders[GATEWAY_HEADERS.INTERNAL_SECRET], "gw-secret");
+      assert.strictEqual(calledBody.incidentId, incidentId);
+      assert.strictEqual(calledBody.authorId, authorId);
+      assert.deepStrictEqual(calledBody.assignedUserIds, [activeOfficerId]);
+      assert.strictEqual(res.dispatched, true);
+    });
+
+    it("IncidentService.addIncidentComment dispatches non-blocking comment notification with active assignedUserIds and participantUserIds", async () => {
+      let dispatchedPayload: any = null;
+      const createdComment = {
+        id: "0194e1e0-a43b-7341-9426-38290f6da999",
+        incidentId,
+        userId: authorId,
+        comment: "Chụp lại ảnh xác nhận nhé",
+        createdAt: new Date("2026-11-24T10:00:00.000Z"),
+      };
+
+      const mockRepo = {
+        findIncidentById: mock.fn(async () => ({
+          id: incidentId,
+          siteId,
+          cameraId,
+          violationType: VIOLATION_TYPE.NO_HELMET,
+          assignments: [
+            { assignedTo: activeOfficerId, status: ASSIGNMENT_STATUS.ACTIVE },
+            { assignedTo: oldOfficerId, status: ASSIGNMENT_STATUS.COMPLETED },
+          ],
+          comments: [
+            { userId: priorParticipantId },
+            { userId: priorParticipantId },
+          ],
+        })),
+        addComment: mock.fn(async () => createdComment),
+      } as any;
+
+      const mockNotif = {
+        dispatchIncidentNotification: mock.fn(async () => ({})),
+        dispatchIncidentCommentNotification: mock.fn(async (payload: any) => {
+          dispatchedPayload = payload;
+          throw new Error("Notification service temporarily unreachable");
+        }),
+      } as any;
+
+      const service = new IncidentService(mockRepo, undefined, mockNotif);
+      const result = await service.addIncidentComment(
+        incidentId,
+        { comment: "Chụp lại ảnh xác nhận nhé" },
+        authorId,
+        { email: "manager@ppe.local", role: ROLES.SAFETY_MANAGER },
+      );
+
+      assert.strictEqual(result.id, createdComment.id);
+      await new Promise((r) => setTimeout(r, 10));
+      assert.ok(dispatchedPayload);
+      assert.strictEqual(dispatchedPayload.incidentId, incidentId);
+      assert.strictEqual(dispatchedPayload.commentId, createdComment.id);
+      assert.strictEqual(dispatchedPayload.siteId, siteId);
+      assert.strictEqual(dispatchedPayload.authorId, authorId);
+      assert.strictEqual(dispatchedPayload.authorEmail, "manager@ppe.local");
+      assert.strictEqual(dispatchedPayload.authorRole, ROLES.SAFETY_MANAGER);
+      assert.deepStrictEqual(dispatchedPayload.assignedUserIds, [activeOfficerId]);
+      assert.deepStrictEqual(dispatchedPayload.participantUserIds, [priorParticipantId]);
     });
   });
 });
