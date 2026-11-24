@@ -157,9 +157,20 @@ export interface IncidentAssignmentItemDto {
   id: string;
   incidentId: string;
   assignedTo: string;
+  assignedToName?: string;
   assignedAt: Date;
   unassignedAt?: Date | null;
   status: AssignmentStatus | string;
+}
+
+export interface IncidentCommentItemDto {
+  id: string;
+  incidentId: string;
+  userId: string;
+  userName?: string;
+  userRole?: string;
+  comment: string;
+  createdAt: Date;
 }
 
 export interface IncidentItemDto {
@@ -179,6 +190,7 @@ export interface IncidentItemDto {
   updatedAt: Date;
   evidences?: IncidentEvidenceItemDto[];
   assignments?: IncidentAssignmentItemDto[];
+  comments?: IncidentCommentItemDto[];
   _count?: {
     evidences: number;
     comments: number;

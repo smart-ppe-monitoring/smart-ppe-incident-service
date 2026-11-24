@@ -53,6 +53,7 @@ const envSchema = z
      */
     GATEWAY_INTERNAL_SECRET: z.string().default(""),
     INTERNAL_SERVICE_TOKEN: z.string().default(""),
+    IDENTITY_SERVICE_URL: z.string().default(""),
     KAFKA_ENABLED: z.string().default("false"),
     PPE_KAFKA_BROKERS: z
       .string()
@@ -363,6 +364,28 @@ function resolveEncryptionKey(): string {
   );
 }
 
+/** Phân giải URL của Identity Service cho gọi M2M nội bộ (ưu tiên IDENTITY_SERVICE_URL, sau đó suy từ AUTH_JWKS_URL) */
+function resolveIdentityServiceUrl(): string {
+  const configured = (_env.IDENTITY_SERVICE_URL || "").trim();
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+
+  const jwksUrl = (_env.AUTH_JWKS_URL || "").trim();
+  if (jwksUrl) {
+    try {
+      const parsed = new URL(jwksUrl);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return parsed.origin;
+      }
+    } catch {
+      // Ignore invalid AUTH_JWKS_URL and fallback to localhost default
+    }
+  }
+
+  return "http://localhost:9999";
+}
+
 /** Phân giải cấu hình Redis: ưu tiên REDIS_URL (DSN) nếu có, fallback sang biến đơn */
 function resolveRedisConfig() {
   let host = _env.REDIS_HOST;
@@ -436,6 +459,10 @@ export const envConfig = {
   internalService: {
     /** Token M2M dùng để xác thực các tích hợp nội bộ (AI Vision Service). */
     token: _env.INTERNAL_SERVICE_TOKEN || "",
+  },
+  identity: {
+    /** Base URL M2M của Identity Service dùng để tra cứu danh bạ người dùng theo công trường. */
+    serviceUrl: resolveIdentityServiceUrl(),
   },
   kafka: {
     enabled: _env.KAFKA_ENABLED === "true",

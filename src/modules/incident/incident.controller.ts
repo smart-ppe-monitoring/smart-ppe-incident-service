@@ -258,6 +258,7 @@ export class IncidentController {
       const actorId = getActorId(req);
       const body = req.body as CreateIncidentCommentDto;
       const result = await this.service.addIncidentComment(id, body, actorId, {
+        fullName: (req.user as any)?.fullName,
         email: req.user?.email,
         role: req.user?.role,
       });

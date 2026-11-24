@@ -89,3 +89,13 @@ export const VALID_INCIDENT_TRANSITIONS: Record<
   [INCIDENT_STATUS.RESOLVED]: [INCIDENT_STATUS.CLOSED],
   [INCIDENT_STATUS.CLOSED]: [],
 };
+
+/**
+ * Tên sự kiện Transactional Outbox của Incident Service
+ */
+export const INCIDENT_OUTBOX_EVENT = {
+  CREATED: "ppe.incident.created",
+  RESOLVED: "ppe.incident.resolved",
+  STATUS_CHANGED: "ppe.incident.status_changed",
+  COMMENTED: "ppe.incident.commented",
+} as const;

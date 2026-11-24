@@ -29,6 +29,7 @@ import {
 import {
   INCIDENT_STATUS,
   INCIDENT_SEVERITY,
+  INCIDENT_OUTBOX_EVENT,
   ASSIGNMENT_STATUS,
   EVIDENCE_TYPE,
 } from "../../common/constants/incident.constant";
@@ -1285,15 +1286,56 @@ export class IncidentRepository {
   }
 
   // ── Comment Operations ─────────────────────────────────────────────────────
-  async addComment(incidentId: string, userId: string, comment: string) {
+  async addComment(
+    incidentId: string,
+    userId: string,
+    comment: string,
+    siteId?: string,
+  ) {
     const validUserId = normalizeActorUuid(userId, false);
-    return this.db.incidentComment.create({
-      data: {
-        incidentId,
-        userId: validUserId,
-        comment,
-      },
-    });
+    const persistComment = async (tx: any) => {
+      const createdComment = await tx.incidentComment.create({
+        data: {
+          incidentId,
+          userId: validUserId,
+          comment,
+        },
+      });
+
+      // SEC-11: Ghi nhận sự kiện bình luận mới vào Transactional Outbox trong cùng transaction
+      if (typeof tx.outboxEvent?.create === "function") {
+        await tx.outboxEvent.create({
+          data: {
+            eventType: INCIDENT_OUTBOX_EVENT.COMMENTED,
+            aggregateId: incidentId,
+            payload: {
+              incidentId,
+              commentId: createdComment.id,
+              ...(siteId ? { siteId } : {}),
+              userId: validUserId,
+              comment,
+              createdAt:
+                createdComment.createdAt instanceof Date
+                  ? createdComment.createdAt.toISOString()
+                  : createdComment.createdAt || new Date().toISOString(),
+              timestamp: new Date().toISOString(),
+            },
+            status: "PENDING",
+          },
+        });
+      }
+
+      return createdComment;
+    };
+
+    if (typeof (this.db as any).$transaction === "function") {
+      return (this.db as any).$transaction(
+        async (tx: any) => persistComment(tx),
+        DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+      );
+    }
+
+    return persistComment(this.db);
   }
 
   async findCommentsByIncidentId(incidentId: string) {

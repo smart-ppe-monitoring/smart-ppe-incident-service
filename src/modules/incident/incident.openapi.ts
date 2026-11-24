@@ -421,7 +421,7 @@ export function registerIncidentOpenApi(): void {
     method: "get",
     path: "/incidents/{id}/comments",
     tags: ["Incidents"],
-    summary: "Danh sách bình luận/trao đổi về sự cố",
+    summary: "Danh sách bình luận/trao đổi về sự cố (kèm userName, userRole)",
     security: [{ BearerAuth: [] }],
     request: { params: incidentIdParamSchema },
     responses: {
@@ -443,7 +443,7 @@ export function registerIncidentOpenApi(): void {
     method: "post",
     path: "/incidents/{id}/comments",
     tags: ["Incidents"],
-    summary: "Thêm bình luận trao đổi về sự cố",
+    summary: "Thêm bình luận trao đổi về sự cố (chặn nếu sự cố đã CLOSED)",
     security: [{ BearerAuth: [] }],
     request: {
       params: incidentIdParamSchema,

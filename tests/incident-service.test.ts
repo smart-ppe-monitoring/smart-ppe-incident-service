@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import jwt from "jsonwebtoken";
 import {
   INCIDENT_STATUS,
+  INCIDENT_OUTBOX_EVENT,
   VIOLATION_TYPE,
   INCIDENT_SEVERITY,
   EVIDENCE_TYPE,
@@ -41,6 +42,7 @@ import {
 import { IncidentService } from "../src/modules/incident/incident.service";
 import { IncidentController } from "../src/modules/incident/incident.controller";
 import { HttpNotificationServiceClient } from "../src/modules/incident/notification-client.interface";
+import { HttpIdentityUserDirectory } from "../src/modules/incident/identity-client.interface";
 import {
   IncidentRepository,
   serializeEvidence,
@@ -2211,6 +2213,314 @@ describe("Task BE-06: PPE Incident Management Service Suite", () => {
       assert.strictEqual(dispatchedPayload.authorRole, ROLES.SAFETY_MANAGER);
       assert.deepStrictEqual(dispatchedPayload.assignedUserIds, [activeOfficerId]);
       assert.deepStrictEqual(dispatchedPayload.participantUserIds, [priorParticipantId]);
+    });
+  });
+
+  describe("Incident Comment Closed Guard, Transactional Outbox & M2M User Enrichment", () => {
+    const incidentId = "0194e1e0-a43b-7341-9426-38290f6da867";
+    const siteId = "0194e1e0-a43b-7341-9426-38290f6da111";
+    const cameraId = "0194e1e0-a43b-7341-9426-38290f6da222";
+    const managerId = "0194e1e0-a43b-7341-9426-38290f6da001";
+    const officerId = "0194e1e0-a43b-7341-9426-38290f6da002";
+    const formerUserId = "0194e1e0-a43b-7341-9426-38290f6da099";
+
+    it("HttpIdentityUserDirectory caches site users for 60s and fails open without caching errors", async () => {
+      let fetchCalls = 0;
+      let lastUrl = "";
+      let lastHeaders: Record<string, string> = {};
+      let failNext = false;
+
+      const directory = new HttpIdentityUserDirectory({
+        baseUrl: "http://identity-service:9999",
+        internalToken: "m2m-secret-token",
+        gatewaySecret: "gw-secret",
+        cacheTtlMs: 60_000,
+        fetcher: (async (url: any, init: any) => {
+          fetchCalls += 1;
+          lastUrl = String(url);
+          lastHeaders = init.headers;
+          if (failNext) {
+            return new Response("Internal Error", { status: 500 });
+          }
+          return new Response(
+            JSON.stringify({
+              success: true,
+              data: [
+                {
+                  id: managerId,
+                  email: "manager@ppe.local",
+                  fullName: "Nguyễn Văn An",
+                  role: ROLES.SAFETY_MANAGER,
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }) as typeof fetch,
+      });
+
+      const firstMap = await directory.getSiteUserMap(siteId);
+      const cachedMap = await directory.getSiteUserMap(siteId);
+
+      assert.strictEqual(fetchCalls, 1);
+      assert.strictEqual(
+        lastUrl,
+        `http://identity-service:9999/api/v1/users/internal/incident-recipients?siteId=${siteId}`,
+      );
+      assert.strictEqual(lastHeaders[GATEWAY_HEADERS.INTERNAL_SERVICE_TOKEN], "m2m-secret-token");
+      assert.strictEqual(lastHeaders[GATEWAY_HEADERS.INTERNAL_SECRET], "gw-secret");
+      assert.strictEqual(firstMap.get(managerId)?.fullName, "Nguyễn Văn An");
+      assert.strictEqual(cachedMap.get(managerId)?.role, ROLES.SAFETY_MANAGER);
+
+      directory.clearCache();
+      failNext = true;
+      const errMap = await directory.getSiteUserMap(siteId);
+      assert.strictEqual(errMap.size, 0);
+      assert.strictEqual(fetchCalls, 2);
+
+      failNext = false;
+      const recoveredMap = await directory.getSiteUserMap(siteId);
+      assert.strictEqual(recoveredMap.get(managerId)?.fullName, "Nguyễn Văn An");
+      assert.strictEqual(fetchCalls, 3);
+    });
+
+    it("IncidentRepository.addComment persists comment and ppe.incident.commented outboxEvent in transaction", async () => {
+      let createdCommentArgs: any = null;
+      let createdOutboxArgs: any = null;
+      const createdAt = new Date("2026-11-24T12:00:00.000Z");
+
+      const mockDb = {
+        $transaction: mock.fn(async (cb: any) =>
+          cb({
+            incidentComment: {
+              create: mock.fn(async (args: any) => {
+                createdCommentArgs = args;
+                return {
+                  id: "0194e1e0-a43b-7341-9426-38290f6da777",
+                  incidentId: args.data.incidentId,
+                  userId: args.data.userId,
+                  comment: args.data.comment,
+                  createdAt,
+                };
+              }),
+            },
+            outboxEvent: {
+              create: mock.fn(async (args: any) => {
+                createdOutboxArgs = args;
+                return { id: "outbox-1", ...args.data };
+              }),
+            },
+          }),
+        ),
+      };
+
+      const repo = new IncidentRepository(mockDb);
+      const comment = await repo.addComment(incidentId, managerId, "Đã nhắc công nhân đội mũ", siteId);
+
+      assert.strictEqual(mockDb.$transaction.mock.callCount(), 1);
+      assert.strictEqual(createdCommentArgs.data.incidentId, incidentId);
+      assert.strictEqual(createdCommentArgs.data.userId, managerId);
+      assert.strictEqual(createdOutboxArgs.data.eventType, INCIDENT_OUTBOX_EVENT.COMMENTED);
+      assert.strictEqual(createdOutboxArgs.data.aggregateId, incidentId);
+      assert.strictEqual(createdOutboxArgs.data.status, "PENDING");
+      assert.strictEqual(createdOutboxArgs.data.payload.commentId, comment.id);
+      assert.strictEqual(createdOutboxArgs.data.payload.siteId, siteId);
+      assert.strictEqual(createdOutboxArgs.data.payload.userId, managerId);
+    });
+
+    it("IncidentService.addIncidentComment blocks comments with 400 BAD_REQUEST when incident status is CLOSED", async () => {
+      const mockRepo = {
+        findIncidentById: mock.fn(async () => ({
+          id: incidentId,
+          siteId,
+          cameraId,
+          status: INCIDENT_STATUS.CLOSED,
+        })),
+        addComment: mock.fn(),
+      } as any;
+
+      const mockNotif = {
+        dispatchIncidentNotification: mock.fn(),
+        dispatchIncidentCommentNotification: mock.fn(),
+      } as any;
+
+      const service = new IncidentService(mockRepo, undefined, mockNotif);
+
+      await assert.rejects(
+        async () => {
+          await service.addIncidentComment(incidentId, { comment: "Bình luận sau khi đóng" }, officerId);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 400);
+          assert.strictEqual(err.code, ERROR_CODE.BAD_REQUEST);
+          return true;
+        },
+      );
+
+      assert.strictEqual(mockRepo.addComment.mock.callCount(), 0);
+      assert.strictEqual(mockNotif.dispatchIncidentCommentNotification.mock.callCount(), 0);
+    });
+
+    it("IncidentService enriches userName/userRole/assignedToName in getIncidentById, getIncidentComments, getIncidentAssignments and addIncidentComment", async () => {
+      let dispatchedPayload: any = null;
+      const mockDirectory = {
+        getSiteUserMap: mock.fn(async () =>
+          new Map([
+            [
+              managerId,
+              {
+                id: managerId,
+                email: "manager@ppe.local",
+                fullName: "Trần Quản Lý",
+                role: ROLES.SAFETY_MANAGER,
+              },
+            ],
+            [
+              officerId,
+              {
+                id: officerId,
+                email: "officer@ppe.local",
+                fullName: "Lê Cán Bộ",
+                role: ROLES.SAFETY_OFFICER,
+              },
+            ],
+          ]),
+        ),
+      };
+
+      const baseComments = [
+        {
+          id: "c-1",
+          incidentId,
+          userId: managerId,
+          comment: "Kiểm tra khu vực C",
+          createdAt: new Date("2026-11-24T10:00:00.000Z"),
+        },
+        {
+          id: "c-2",
+          incidentId,
+          userId: formerUserId,
+          comment: "Bình luận cũ",
+          createdAt: new Date("2026-11-24T10:05:00.000Z"),
+        },
+      ];
+      const baseAssignments = [
+        {
+          id: "a-1",
+          incidentId,
+          assignedTo: officerId,
+          assignedAt: new Date("2026-11-24T09:50:00.000Z"),
+          status: ASSIGNMENT_STATUS.ACTIVE,
+        },
+      ];
+
+      const createdComment = {
+        id: "c-3",
+        incidentId,
+        userId: managerId,
+        comment: "Đã xử lý xong",
+        createdAt: new Date("2026-11-24T10:10:00.000Z"),
+      };
+
+      const mockRepo = {
+        findIncidentById: mock.fn(async () => ({
+          id: incidentId,
+          siteId,
+          cameraId,
+          status: INCIDENT_STATUS.CONFIRMED,
+          violationType: VIOLATION_TYPE.NO_HELMET,
+          comments: baseComments,
+          assignments: baseAssignments,
+        })),
+        findCommentsByIncidentId: mock.fn(async () => baseComments),
+        findAssignmentsByIncidentId: mock.fn(async () => baseAssignments),
+        addComment: mock.fn(async () => createdComment),
+      } as any;
+
+      const mockNotif = {
+        dispatchIncidentNotification: mock.fn(async () => ({})),
+        dispatchIncidentCommentNotification: mock.fn(async (payload: any) => {
+          dispatchedPayload = payload;
+          return { dispatched: true };
+        }),
+      } as any;
+
+      const service = new IncidentService(mockRepo, undefined, mockNotif, mockDirectory);
+
+      const detail = await service.getIncidentById(incidentId);
+      assert.strictEqual(detail.comments[0].userName, "Trần Quản Lý");
+      assert.strictEqual(detail.comments[0].userRole, ROLES.SAFETY_MANAGER);
+      assert.strictEqual("userName" in detail.comments[1], false);
+      assert.strictEqual(detail.assignments[0].assignedToName, "Lê Cán Bộ");
+
+      const comments = await service.getIncidentComments(incidentId);
+      assert.strictEqual(comments[0].userName, "Trần Quản Lý");
+      assert.strictEqual(comments[0].userRole, ROLES.SAFETY_MANAGER);
+      assert.strictEqual("userName" in comments[1], false);
+
+      const assignments = await service.getIncidentAssignments(incidentId);
+      assert.strictEqual(assignments[0].assignedToName, "Lê Cán Bộ");
+
+      const added = await service.addIncidentComment(
+        incidentId,
+        { comment: "Đã xử lý xong" },
+        managerId,
+        { email: "manager@ppe.local", role: ROLES.SAFETY_MANAGER },
+      );
+      assert.strictEqual(added.userName, "Trần Quản Lý");
+      assert.strictEqual(added.userRole, ROLES.SAFETY_MANAGER);
+      assert.strictEqual(mockRepo.addComment.mock.calls[0].arguments[3], siteId);
+
+      await new Promise((r) => setTimeout(r, 10));
+      assert.ok(dispatchedPayload);
+      assert.strictEqual(dispatchedPayload.authorName, "Trần Quản Lý");
+      assert.strictEqual(dispatchedPayload.authorRole, ROLES.SAFETY_MANAGER);
+    });
+
+    it("IncidentService fails open and falls back to actorContext when identityDirectory rejects", async () => {
+      const mockDirectory = {
+        getSiteUserMap: mock.fn(async () => {
+          throw new Error("Identity service timeout");
+        }),
+      };
+
+      const createdComment = {
+        id: "c-4",
+        incidentId,
+        userId: officerId,
+        comment: "Đã cập nhật ảnh mới",
+        createdAt: new Date("2026-11-24T11:00:00.000Z"),
+      };
+
+      const mockRepo = {
+        findIncidentById: mock.fn(async () => ({
+          id: incidentId,
+          siteId,
+          cameraId,
+          status: INCIDENT_STATUS.CONFIRMED,
+          assignments: [],
+          comments: [],
+        })),
+        addComment: mock.fn(async () => createdComment),
+      } as any;
+
+      const mockNotif = {
+        dispatchIncidentNotification: mock.fn(async () => ({})),
+        dispatchIncidentCommentNotification: mock.fn(async () => ({})),
+      } as any;
+
+      const service = new IncidentService(mockRepo, undefined, mockNotif, mockDirectory);
+      const added = await service.addIncidentComment(
+        incidentId,
+        { comment: "Đã cập nhật ảnh mới" },
+        officerId,
+        { email: "officer@ppe.local", role: ROLES.SAFETY_OFFICER },
+      );
+
+      assert.strictEqual(added.id, createdComment.id);
+      assert.strictEqual(added.userName, "officer@ppe.local");
+      assert.strictEqual(added.userRole, ROLES.SAFETY_OFFICER);
     });
   });
 });

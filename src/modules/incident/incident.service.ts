@@ -11,6 +11,11 @@ import {
   NotificationService,
   notificationService,
 } from "./notification-client.interface";
+import {
+  IdentityUserDirectory,
+  IncidentSiteUserInfo,
+  identityUserDirectory,
+} from "./identity-client.interface";
 import { imageProcessingService } from "../../common/services/image-processing.service";
 import { AppError } from "../../common/errors/app-error";
 import { ERROR_CODE } from "../../common/errors/error-code";
@@ -55,15 +60,18 @@ export class IncidentService {
   private readonly repository: IncidentRepository;
   private readonly storage: EvidenceStorageService;
   private readonly notification: NotificationService;
+  private readonly identityDirectory: IdentityUserDirectory;
 
   constructor(
     repository?: IncidentRepository,
     storage?: EvidenceStorageService,
     notification?: NotificationService,
+    identityDirectory?: IdentityUserDirectory,
   ) {
     this.repository = repository || incidentRepository;
     this.storage = storage || evidenceStorageService;
     this.notification = notification || notificationService;
+    this.identityDirectory = identityDirectory || identityUserDirectory;
   }
 
   // ── Incident CRUD Operations ───────────────────────────────────────────────
@@ -143,7 +151,7 @@ export class IncidentService {
     return created;
   }
 
-  async getIncidentById(id: string) {
+  private async getRawIncidentById(id: string) {
     const incident = await this.repository.findIncidentById(id);
     if (!incident) {
       throw new AppError(
@@ -153,6 +161,116 @@ export class IncidentService {
       );
     }
     return incident;
+  }
+
+  private async fetchSiteUserMap(
+    siteId?: string,
+  ): Promise<Map<string, IncidentSiteUserInfo>> {
+    if (typeof this.identityDirectory?.getSiteUserMap !== "function") {
+      return new Map();
+    }
+    try {
+      return await this.identityDirectory.getSiteUserMap(siteId);
+    } catch (err: any) {
+      console.warn(
+        "[IncidentService] Không thể tải danh bạ người dùng công trường:",
+        err?.message || err,
+      );
+      return new Map();
+    }
+  }
+
+  private enrichComment<T extends Record<string, any>>(
+    comment: T,
+    userMap: Map<string, IncidentSiteUserInfo>,
+    fallback?: { fullName?: string; email?: string; role?: string },
+  ): T & { userName?: string; userRole?: string } {
+    if (!comment || typeof comment !== "object") {
+      return comment;
+    }
+    const matched =
+      typeof comment.userId === "string" ? userMap.get(comment.userId) : undefined;
+    const userName =
+      matched?.fullName?.trim() ||
+      fallback?.fullName?.trim() ||
+      matched?.email?.trim() ||
+      fallback?.email?.trim() ||
+      (typeof comment.userName === "string" ? comment.userName.trim() : "");
+    const userRole =
+      matched?.role?.trim() ||
+      fallback?.role?.trim() ||
+      (typeof comment.userRole === "string" ? comment.userRole.trim() : "");
+
+    const enriched: Record<string, any> = { ...comment };
+    if (userName) {
+      enriched.userName = userName;
+    }
+    if (userRole) {
+      enriched.userRole = userRole;
+    }
+    return enriched as T & { userName?: string; userRole?: string };
+  }
+
+  private enrichAssignment<T extends Record<string, any>>(
+    assignment: T,
+    userMap: Map<string, IncidentSiteUserInfo>,
+  ): T & { assignedToName?: string } {
+    if (!assignment || typeof assignment !== "object") {
+      return assignment;
+    }
+    const matched =
+      typeof assignment.assignedTo === "string"
+        ? userMap.get(assignment.assignedTo)
+        : undefined;
+    const assignedToName =
+      matched?.fullName?.trim() ||
+      matched?.email?.trim() ||
+      (typeof assignment.assignedToName === "string"
+        ? assignment.assignedToName.trim()
+        : "");
+
+    if (!assignedToName) {
+      return assignment;
+    }
+    return {
+      ...assignment,
+      assignedToName,
+    };
+  }
+
+  async getIncidentById(id: string) {
+    const incident = await this.getRawIncidentById(id);
+    const hasComments =
+      Array.isArray(incident.comments) && incident.comments.length > 0;
+    const hasAssignments =
+      Array.isArray(incident.assignments) && incident.assignments.length > 0;
+
+    if (!hasComments && !hasAssignments) {
+      return incident;
+    }
+
+    const userMap = await this.fetchSiteUserMap(incident.siteId);
+    if (userMap.size === 0) {
+      return incident;
+    }
+
+    return {
+      ...incident,
+      ...(hasComments
+        ? {
+            comments: incident.comments.map((c: any) =>
+              this.enrichComment(c, userMap),
+            ),
+          }
+        : {}),
+      ...(hasAssignments
+        ? {
+            assignments: incident.assignments.map((a: any) =>
+              this.enrichAssignment(a, userMap),
+            ),
+          }
+        : {}),
+    };
   }
 
   /**
@@ -514,8 +632,18 @@ export class IncidentService {
   }
 
   async getIncidentAssignments(id: string) {
-    await this.getIncidentById(id);
-    return this.repository.findAssignmentsByIncidentId(id);
+    const incident = await this.getRawIncidentById(id);
+    const assignments = await this.repository.findAssignmentsByIncidentId(id);
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return assignments;
+    }
+
+    const userMap = await this.fetchSiteUserMap(incident.siteId);
+    if (userMap.size === 0) {
+      return assignments;
+    }
+
+    return assignments.map((a: any) => this.enrichAssignment(a, userMap));
   }
 
   async addIncidentComment(
@@ -524,11 +652,28 @@ export class IncidentService {
     actorId: string,
     actorContext?: { email?: string; role?: string; fullName?: string },
   ) {
-    const incident = await this.getIncidentById(id);
+    const incident = await this.getRawIncidentById(id);
+
+    if (incident.status === INCIDENT_STATUS.CLOSED) {
+      throw new AppError(
+        "Không thể bình luận cho sự cố đã đóng",
+        400,
+        ERROR_CODE.BAD_REQUEST,
+      );
+    }
+
     const createdComment = await this.repository.addComment(
       id,
       actorId,
       dto.comment,
+      incident.siteId,
+    );
+
+    const userMap = await this.fetchSiteUserMap(incident.siteId);
+    const enrichedComment = this.enrichComment(
+      createdComment,
+      userMap,
+      actorContext,
     );
 
     const assignedUserIds = Array.from(
@@ -552,6 +697,11 @@ export class IncidentService {
       ),
     );
 
+    const resolvedAuthorName =
+      enrichedComment?.userName || actorContext?.fullName;
+    const resolvedAuthorRole =
+      enrichedComment?.userRole || actorContext?.role;
+
     if (typeof this.notification.dispatchIncidentCommentNotification === "function") {
       this.notification
         .dispatchIncidentCommentNotification({
@@ -561,9 +711,9 @@ export class IncidentService {
           cameraId: incident.cameraId,
           violationType: incident.violationType,
           authorId: actorId,
-          ...(actorContext?.fullName ? { authorName: actorContext.fullName } : {}),
+          ...(resolvedAuthorName ? { authorName: resolvedAuthorName } : {}),
           ...(actorContext?.email ? { authorEmail: actorContext.email } : {}),
-          ...(actorContext?.role ? { authorRole: actorContext.role } : {}),
+          ...(resolvedAuthorRole ? { authorRole: resolvedAuthorRole } : {}),
           comment: dto.comment,
           assignedUserIds,
           participantUserIds,
@@ -577,12 +727,22 @@ export class IncidentService {
         });
     }
 
-    return createdComment;
+    return enrichedComment;
   }
 
   async getIncidentComments(id: string) {
-    await this.getIncidentById(id);
-    return this.repository.findCommentsByIncidentId(id);
+    const incident = await this.getRawIncidentById(id);
+    const comments = await this.repository.findCommentsByIncidentId(id);
+    if (!Array.isArray(comments) || comments.length === 0) {
+      return comments;
+    }
+
+    const userMap = await this.fetchSiteUserMap(incident.siteId);
+    if (userMap.size === 0) {
+      return comments;
+    }
+
+    return comments.map((c: any) => this.enrichComment(c, userMap));
   }
 
   // ── Evidence Operations ────────────────────────────────────────────────────
