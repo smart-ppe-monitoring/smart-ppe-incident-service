@@ -429,6 +429,72 @@ export const closeIncidentSchema = z.object({
 // ── Assignment & Comment Schemas ─────────────────────────────────────────────
 export const createIncidentAssignmentSchema = z.object({
   assignedTo: uuidSchema,
+  note: z.string().trim().max(1000, "Ghi chú phân công tối đa 1000 ký tự").optional(),
+});
+
+export const sharedResolutionEvidenceSchema = z.object({
+  cameraId: uuidSchema.optional(),
+  evidenceType: z
+    .enum([
+      EVIDENCE_TYPE.SNAPSHOT,
+      EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+      EVIDENCE_TYPE.VIDEO_CLIP,
+    ])
+    .default(EVIDENCE_TYPE.REFERENCE_SNAPSHOT),
+  storageKey: storageKeySchema,
+  fileName: z
+    .string({ required_error: "Tên tệp là bắt buộc" })
+    .trim()
+    .min(1, "Tên tệp không được để trống")
+    .max(255, "Tên tệp tối đa 255 ký tự"),
+  mimeType: z
+    .string({ required_error: "mimeType là bắt buộc" })
+    .trim()
+    .min(1, "mimeType không được để trống")
+    .max(100, "mimeType tối đa 100 ký tự")
+    .regex(
+      /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/,
+      "Định dạng MIME type không hợp lệ",
+    ),
+  fileSize: z.coerce.number().nonnegative("Kích thước tệp không âm").default(0),
+  capturedAt: z.coerce.date().optional(),
+  metadata: createEvidenceMetadataSchema.optional(),
+});
+
+export const batchAssignIncidentsSchema = z.object({
+  ids: z
+    .array(uuidSchema, {
+      required_error: "Danh sách ID sự cố (ids) là bắt buộc",
+    })
+    .min(1, "Danh sách ID sự cố không được để trống")
+    .max(100, "Tối đa 100 sự cố mỗi lần phân công hàng loạt"),
+  assignedTo: uuidSchema,
+  note: z.string().trim().max(1000, "Ghi chú phân công tối đa 1000 ký tự").optional(),
+});
+
+export const batchResolveIncidentsSchema = z.object({
+  ids: z
+    .array(uuidSchema, {
+      required_error: "Danh sách ID sự cố (ids) là bắt buộc",
+    })
+    .min(1, "Danh sách ID sự cố không được để trống")
+    .max(100, "Tối đa 100 sự cố mỗi lần khắc phục hàng loạt"),
+  resolutionNote: z
+    .string({ required_error: "Ghi chú giải quyết vi phạm là bắt buộc" })
+    .trim()
+    .min(3, "Ghi chú giải quyết phải có ít nhất 3 ký tự")
+    .max(2000, "Ghi chú giải quyết tối đa 2000 ký tự"),
+  sharedEvidence: sharedResolutionEvidenceSchema.optional(),
+});
+
+export const batchCloseIncidentsSchema = z.object({
+  ids: z
+    .array(uuidSchema, {
+      required_error: "Danh sách ID sự cố (ids) là bắt buộc",
+    })
+    .min(1, "Danh sách ID sự cố không được để trống")
+    .max(100, "Tối đa 100 sự cố mỗi lần đóng hồ sơ hàng loạt"),
+  closeNote: z.string().trim().max(2000, "Ghi chú đóng hồ sơ tối đa 2000 ký tự").optional(),
 });
 
 export const createIncidentCommentSchema = z.object({

@@ -191,6 +191,61 @@ export interface CloseIncidentDto {
 // ── Assignment & Comment DTOs ────────────────────────────────────────────────
 export interface CreateIncidentAssignmentDto {
   assignedTo: string;
+  note?: string;
+}
+
+export interface BatchAssignIncidentsDto {
+  ids: string[];
+  assignedTo: string;
+  note?: string;
+}
+
+export interface BatchAssignResultDto {
+  total: number;
+  assignedCount: number;
+  assignedTo: string;
+  assignedToName?: string;
+  assignedIds: string[];
+  skippedIds: string[];
+}
+
+export interface SharedResolutionEvidenceDto {
+  cameraId?: string;
+  evidenceType?: EvidenceType;
+  storageKey: string;
+  fileName: string;
+  mimeType: string;
+  fileSize?: number | bigint;
+  capturedAt?: string | Date;
+  metadata?: CreateEvidenceMetadataDto;
+}
+
+export interface BatchResolveIncidentsDto {
+  ids: string[];
+  resolutionNote: string;
+  sharedEvidence?: SharedResolutionEvidenceDto;
+}
+
+export interface BatchResolveResultDto {
+  total: number;
+  resolvedCount: number;
+  newStatus: string;
+  resolvedIds: string[];
+  skippedIds: string[];
+  sharedEvidenceStorageKey?: string;
+}
+
+export interface BatchCloseIncidentsDto {
+  ids: string[];
+  closeNote?: string;
+}
+
+export interface BatchCloseResultDto {
+  total: number;
+  closedCount: number;
+  newStatus: string;
+  closedIds: string[];
+  skippedIds: string[];
 }
 
 export interface CreateIncidentCommentDto {

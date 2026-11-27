@@ -15,6 +15,9 @@ import {
   incidentStatusCountsQuerySchema,
   feedbackDatasetQuerySchema,
   batchReviewIncidentsSchema,
+  batchAssignIncidentsSchema,
+  batchResolveIncidentsSchema,
+  batchCloseIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
   closeIncidentSchema,
@@ -57,6 +60,30 @@ incidentRouter.post(
   requirePermission(PERMISSIONS.PPE_INCIDENT_REVIEW),
   validate(batchReviewIncidentsSchema),
   incidentController.batchReviewIncidents,
+);
+
+incidentRouter.post(
+  "/batch-assign",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_MANAGE),
+  validate(batchAssignIncidentsSchema),
+  incidentController.batchAssignIncidents,
+);
+
+incidentRouter.post(
+  "/batch-resolve",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_UPDATE),
+  validate(batchResolveIncidentsSchema),
+  incidentController.batchResolveIncidents,
+);
+
+incidentRouter.post(
+  "/batch-close",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_MANAGE),
+  validate(batchCloseIncidentsSchema),
+  incidentController.batchCloseIncidents,
 );
 
 incidentRouter.get(

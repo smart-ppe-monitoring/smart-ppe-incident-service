@@ -11,6 +11,9 @@ import {
   ResolveIncidentDto,
   CloseIncidentDto,
   CreateIncidentAssignmentDto,
+  BatchAssignIncidentsDto,
+  BatchResolveIncidentsDto,
+  BatchCloseIncidentsDto,
   CreateIncidentCommentDto,
   CreateEvidenceDto,
   EvidenceQueryDto,
@@ -43,7 +46,12 @@ export class IncidentController {
     try {
       const actorId = getActorId(req);
       const body = req.body as CreateIncidentDto;
-      const result = await this.service.createIncident(body, actorId);
+      const result = await this.service.createIncident(
+        body,
+        actorId,
+        undefined,
+        req.user,
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -60,7 +68,7 @@ export class IncidentController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.getIncidentById(id);
+      const result = await this.service.getIncidentById(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -125,7 +133,7 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const body = req.body as UpdateIncidentDto;
-      const result = await this.service.updateIncident(id, body);
+      const result = await this.service.updateIncident(id, body, req.user);
       res.json({
         success: true,
         data: result,
@@ -138,7 +146,7 @@ export class IncidentController {
   deleteIncident = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.deleteIncident(id);
+      const result = await this.service.deleteIncident(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -154,7 +162,12 @@ export class IncidentController {
       const { id } = req.params;
       const actorId = getActorId(req);
       const body = req.body as ReviewIncidentDto;
-      const result = await this.service.reviewIncident(id, body, actorId);
+      const result = await this.service.reviewIncident(
+        id,
+        body,
+        actorId,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,
@@ -187,13 +200,92 @@ export class IncidentController {
     }
   };
 
+  batchAssignIncidents = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const actorId = getActorId(req);
+      const body = req.body as BatchAssignIncidentsDto;
+      const result = await this.service.batchAssignIncidents(
+        body,
+        actorId,
+        req.user,
+      );
+      res.json({
+        success: true,
+        message: `Đã phân công thành công ${result.assignedCount}/${result.total} sự cố`,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  batchResolveIncidents = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const actorId = getActorId(req);
+      const role = req.user?.role || "USER";
+      const body = req.body as BatchResolveIncidentsDto;
+      const result = await this.service.batchResolveIncidents(
+        body,
+        actorId,
+        role,
+        req.user,
+      );
+      res.json({
+        success: true,
+        message: `Đã xử lý khắc phục thành công ${result.resolvedCount}/${result.total} sự cố`,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  batchCloseIncidents = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const actorId = getActorId(req);
+      const role = req.user?.role || "USER";
+      const body = req.body as BatchCloseIncidentsDto;
+      const result = await this.service.batchCloseIncidents(
+        body,
+        actorId,
+        role,
+        req.user,
+      );
+      res.json({
+        success: true,
+        message: `Đã đóng hồ sơ thành công ${result.closedCount}/${result.total} sự cố`,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   resolveIncident = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
       const actorId = getActorId(req);
       const role = req.user?.role || "USER";
       const body = req.body as ResolveIncidentDto;
-      const result = await this.service.resolveIncident(id, body, actorId, role);
+      const result = await this.service.resolveIncident(
+        id,
+        body,
+        actorId,
+        role,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,
@@ -209,7 +301,13 @@ export class IncidentController {
       const actorId = getActorId(req);
       const role = req.user?.role || "USER";
       const body = req.body as CloseIncidentDto;
-      const result = await this.service.closeIncident(id, body, actorId, role);
+      const result = await this.service.closeIncident(
+        id,
+        body,
+        actorId,
+        role,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,
@@ -223,8 +321,14 @@ export class IncidentController {
   assignIncident = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
+      const actorId = getActorId(req);
       const body = req.body as CreateIncidentAssignmentDto;
-      const result = await this.service.assignIncident(id, body);
+      const result = await this.service.assignIncident(
+        id,
+        body,
+        actorId,
+        req.user,
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -241,7 +345,7 @@ export class IncidentController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.getIncidentAssignments(id);
+      const result = await this.service.getIncidentAssignments(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -260,11 +364,17 @@ export class IncidentController {
       const { id } = req.params;
       const actorId = getActorId(req);
       const body = req.body as CreateIncidentCommentDto;
-      const result = await this.service.addIncidentComment(id, body, actorId, {
-        fullName: (req.user as any)?.fullName,
-        email: req.user?.email,
-        role: req.user?.role,
-      });
+      const result = await this.service.addIncidentComment(
+        id,
+        body,
+        actorId,
+        {
+          fullName: (req.user as any)?.fullName,
+          email: req.user?.email,
+          role: req.user?.role,
+        },
+        req.user,
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -281,7 +391,7 @@ export class IncidentController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.getIncidentComments(id);
+      const result = await this.service.getIncidentComments(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -296,7 +406,7 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const body = req.body as CreateEvidenceDto;
-      const result = await this.service.addEvidence(id, body);
+      const result = await this.service.addEvidence(id, body, req.user);
       res.status(201).json({
         success: true,
         data: result,

@@ -7,6 +7,9 @@ import {
   feedbackDatasetQuerySchema,
   incidentIdParamSchema,
   batchReviewIncidentsSchema,
+  batchAssignIncidentsSchema,
+  batchResolveIncidentsSchema,
+  batchCloseIncidentsSchema,
   reviewIncidentSchema,
   resolveIncidentSchema,
   closeIncidentSchema,
@@ -30,6 +33,9 @@ export function registerIncidentOpenApi(): void {
   openapiRegistry.register("CreateIncidentRequest", createIncidentSchema);
   openapiRegistry.register("UpdateIncidentRequest", updateIncidentSchema);
   openapiRegistry.register("BatchReviewIncidentRequest", batchReviewIncidentsSchema);
+  openapiRegistry.register("BatchAssignIncidentRequest", batchAssignIncidentsSchema);
+  openapiRegistry.register("BatchResolveIncidentRequest", batchResolveIncidentsSchema);
+  openapiRegistry.register("BatchCloseIncidentRequest", batchCloseIncidentsSchema);
   openapiRegistry.register("ReviewIncidentRequest", reviewIncidentSchema);
   openapiRegistry.register("ResolveIncidentRequest", resolveIncidentSchema);
   openapiRegistry.register("CloseIncidentRequest", closeIncidentSchema);
@@ -154,6 +160,119 @@ export function registerIncidentOpenApi(): void {
         content: {
           "application/json": {
             schema: batchReviewResponseSchema,
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/incidents/batch-assign",
+    tags: ["Incidents"],
+    summary: "Phân công hàng loạt sự cố CONFIRMED cho người xử lý thuộc công trường",
+    security: [{ BearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: batchAssignIncidentsSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Phân công hàng loạt sự cố thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              message: z.string(),
+              data: z.object({
+                total: z.number(),
+                assignedCount: z.number(),
+                assignedTo: z.string().uuid(),
+                assignedToName: z.string().optional(),
+                assignedIds: z.array(z.string().uuid()),
+                skippedIds: z.array(z.string().uuid()),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/incidents/batch-resolve",
+    tags: ["Incidents"],
+    summary: "Báo cáo khắc phục hàng loạt sự cố CONFIRMED (hỗ trợ dùng chung 1 bằng chứng sau khắc phục)",
+    security: [{ BearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: batchResolveIncidentsSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Khắc phục hàng loạt sự cố thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              message: z.string(),
+              data: z.object({
+                total: z.number(),
+                resolvedCount: z.number(),
+                newStatus: z.string(),
+                resolvedIds: z.array(z.string().uuid()),
+                skippedIds: z.array(z.string().uuid()),
+                sharedEvidenceStorageKey: z.string().optional(),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/incidents/batch-close",
+    tags: ["Incidents"],
+    summary: "Đóng hồ sơ hàng loạt sự cố ở trạng thái RESOLVED hoặc DISMISSED",
+    security: [{ BearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: batchCloseIncidentsSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Đóng hàng loạt sự cố thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              message: z.string(),
+              data: z.object({
+                total: z.number(),
+                closedCount: z.number(),
+                newStatus: z.string(),
+                closedIds: z.array(z.string().uuid()),
+                skippedIds: z.array(z.string().uuid()),
+              }),
+            }),
           },
         },
       },

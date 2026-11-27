@@ -7,6 +7,7 @@ export interface IncidentSiteUserInfo {
   email: string | null;
   fullName: string | null;
   role: string | null;
+  isActive?: boolean;
 }
 
 export interface IdentityUserDirectory {
@@ -143,6 +144,9 @@ export class HttpIdentityUserDirectory implements IdentityUserDirectory {
           email: typeof entry.email === "string" ? entry.email : null,
           fullName: typeof entry.fullName === "string" ? entry.fullName : null,
           role: typeof entry.role === "string" ? entry.role : null,
+          ...(typeof entry.isActive === "boolean"
+            ? { isActive: entry.isActive }
+            : {}),
         });
       }
 

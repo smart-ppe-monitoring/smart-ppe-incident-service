@@ -29,6 +29,9 @@ import {
   EvidenceAccessLogItemDto,
   PaginatedResultDto,
   IncidentItemDto,
+  SharedResolutionEvidenceDto,
+  BatchResolveResultDto,
+  BatchCloseResultDto,
 } from "./incident.dto";
 import {
   INCIDENT_STATUS,
@@ -1252,8 +1255,428 @@ export class IncidentRepository {
     });
   }
 
+  private async createStatusHistoryEntries(
+    tx: any,
+    entries: Array<{
+      incidentId: string;
+      oldStatus: string;
+      newStatus: string;
+      changedBy: string;
+      reason?: string | null;
+    }>,
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    if (typeof tx.incidentStatusHistory?.createMany === "function") {
+      await tx.incidentStatusHistory.createMany({ data: entries });
+    } else if (typeof tx.incidentStatusHistory?.create === "function") {
+      await Promise.all(
+        entries.map((entry) => tx.incidentStatusHistory.create({ data: entry })),
+      );
+    }
+  }
+
+  private async createOutboxEventEntries(
+    tx: any,
+    entries: Array<{
+      eventType: string;
+      aggregateId: string;
+      payload: Record<string, unknown>;
+      status: string;
+    }>,
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    if (typeof tx.outboxEvent?.createMany === "function") {
+      await tx.outboxEvent.createMany({ data: entries });
+    } else if (typeof tx.outboxEvent?.create === "function") {
+      await Promise.all(
+        entries.map((entry) => tx.outboxEvent.create({ data: entry })),
+      );
+    }
+  }
+
+  async findCandidateIncidentsForBatch(params: {
+    incidentIds: string[];
+    statuses: string[];
+    siteFilter?: string[];
+    requiredActiveAssigneeId?: string;
+  }): Promise<
+    Array<{
+      id: string;
+      siteId: string;
+      cameraId: string;
+      violationType: string;
+      severity: string;
+      status: string;
+      detectedAt: Date;
+    }>
+  > {
+    if (!params.incidentIds || params.incidentIds.length === 0) {
+      return [];
+    }
+
+    const where: any = {
+      id: { in: params.incidentIds },
+      status: { in: params.statuses },
+    };
+
+    if (params.siteFilter && params.siteFilter.length > 0) {
+      where.siteId = { in: params.siteFilter };
+    }
+
+    if (params.requiredActiveAssigneeId) {
+      where.assignments = {
+        some: {
+          assignedTo: params.requiredActiveAssigneeId,
+          status: ASSIGNMENT_STATUS.ACTIVE,
+        },
+      };
+    }
+
+    return this.db.incident.findMany({
+      where,
+      select: COMPACT_INCIDENT_SELECT,
+    });
+  }
+
+  async batchAssignIncidents(params: {
+    incidents: Array<{ id: string; siteId: string }>;
+    assignedTo: string;
+    assignedBy?: string;
+    note?: string;
+  }): Promise<string[]> {
+    if (!params.incidents || params.incidents.length === 0) {
+      return [];
+    }
+
+    const validAssigneeId = normalizeActorUuid(params.assignedTo, false);
+    const validAssignedBy =
+      params.assignedBy && UUID_REGEX.test(params.assignedBy)
+        ? params.assignedBy
+        : undefined;
+    const assignedIds = params.incidents.map((inc) => inc.id);
+    const now = new Date();
+
+    return this.db.$transaction(
+      async (tx: any) => {
+        await tx.incidentAssignment.updateMany({
+          where: {
+            incidentId: { in: assignedIds },
+            status: ASSIGNMENT_STATUS.ACTIVE,
+          },
+          data: {
+            status: ASSIGNMENT_STATUS.COMPLETED,
+            unassignedAt: now,
+          },
+        });
+
+        const assignmentEntries = assignedIds.map((incidentId) => ({
+          incidentId,
+          assignedTo: validAssigneeId,
+          status: ASSIGNMENT_STATUS.ACTIVE,
+        }));
+
+        if (typeof tx.incidentAssignment?.createMany === "function") {
+          await tx.incidentAssignment.createMany({ data: assignmentEntries });
+        } else if (typeof tx.incidentAssignment?.create === "function") {
+          await Promise.all(
+            assignmentEntries.map((entry) =>
+              tx.incidentAssignment.create({ data: entry }),
+            ),
+          );
+        }
+
+        const outboxEntries = params.incidents.map((inc) => ({
+          eventType: INCIDENT_OUTBOX_EVENT.ASSIGNED,
+          aggregateId: inc.id,
+          payload: {
+            incidentId: inc.id,
+            siteId: inc.siteId,
+            assignedTo: validAssigneeId,
+            ...(validAssignedBy ? { assignedBy: validAssignedBy } : {}),
+            ...(params.note ? { note: params.note } : {}),
+            assignedAt: now.toISOString(),
+            timestamp: now.toISOString(),
+          },
+          status: "PENDING",
+        }));
+
+        await this.createOutboxEventEntries(tx, outboxEntries);
+        return assignedIds;
+      },
+      DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+    );
+  }
+
+  async batchResolveIncidents(params: {
+    incidentIds: string[];
+    changedBy: string;
+    resolutionNote: string;
+    siteFilter?: string[];
+    requiredActiveAssigneeId?: string;
+    sharedEvidence?: SharedResolutionEvidenceDto;
+  }): Promise<BatchResolveResultDto> {
+    const validActorId = normalizeActorUuid(params.changedBy, false);
+    const now = new Date();
+
+    return this.db.$transaction(
+      async (tx: any) => {
+        const where: any = {
+          id: { in: params.incidentIds },
+          status: INCIDENT_STATUS.CONFIRMED,
+        };
+
+        if (params.siteFilter && params.siteFilter.length > 0) {
+          where.siteId = { in: params.siteFilter };
+        }
+
+        if (params.requiredActiveAssigneeId) {
+          where.assignments = {
+            some: {
+              assignedTo: params.requiredActiveAssigneeId,
+              status: ASSIGNMENT_STATUS.ACTIVE,
+            },
+          };
+        }
+
+        const confirmedIncidents = await tx.incident.findMany({
+          where,
+          select: { id: true, siteId: true, cameraId: true, status: true },
+        });
+
+        if (confirmedIncidents.length === 0) {
+          return {
+            total: params.incidentIds.length,
+            resolvedCount: 0,
+            newStatus: INCIDENT_STATUS.RESOLVED,
+            resolvedIds: [],
+            skippedIds: [...params.incidentIds],
+          };
+        }
+
+        if (params.sharedEvidence?.storageKey) {
+          const keyParts = params.sharedEvidence.storageKey.split("/");
+          if (keyParts.length >= 3 && isUuid(keyParts[1])) {
+            const mismatchedSite = confirmedIncidents.some(
+              (inc: any) => inc.siteId && keyParts[1] !== inc.siteId,
+            );
+            if (mismatchedSite) {
+              throw new AppError(
+                "storageKey của bằng chứng dùng chung không thuộc phạm vi công trường của các sự cố được chọn",
+                400,
+                ERROR_CODE.VALIDATION_ERROR,
+              );
+            }
+          }
+        }
+
+        const validIds = confirmedIncidents.map((inc: any) => inc.id as string);
+        const resolvedSet = new Set(validIds);
+
+        await tx.incident.updateMany({
+          where: { id: { in: validIds } },
+          data: { status: INCIDENT_STATUS.RESOLVED, resolvedAt: now },
+        });
+
+        if (params.sharedEvidence) {
+          const shared = params.sharedEvidence;
+          const capturedAt = shared.capturedAt ? new Date(shared.capturedAt) : now;
+          await Promise.all(
+            confirmedIncidents.map((inc: any) =>
+              tx.evidence.create({
+                data: {
+                  incidentId: inc.id,
+                  cameraId: shared.cameraId || inc.cameraId,
+                  evidenceType:
+                    shared.evidenceType || EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+                  storageKey: shared.storageKey,
+                  fileName: shared.fileName,
+                  mimeType: shared.mimeType,
+                  fileSize: BigInt(shared.fileSize || 0),
+                  capturedAt,
+                  ...(shared.metadata
+                    ? {
+                        metadata: {
+                          create: {
+                            width: shared.metadata.width ?? null,
+                            height: shared.metadata.height ?? null,
+                            durationSeconds:
+                              shared.metadata.durationSeconds ?? null,
+                            frameRate: shared.metadata.frameRate ?? null,
+                            checksum: shared.metadata.checksum ?? null,
+                            aiDetections:
+                              (shared.metadata.aiDetections as any) ?? undefined,
+                          },
+                        },
+                      }
+                    : {}),
+                },
+              }),
+            ),
+          );
+        }
+
+        await this.createStatusHistoryEntries(
+          tx,
+          confirmedIncidents.map((inc: any) => ({
+            incidentId: inc.id,
+            oldStatus: inc.status,
+            newStatus: INCIDENT_STATUS.RESOLVED,
+            changedBy: validActorId,
+            reason: params.resolutionNote,
+          })),
+        );
+
+        await this.createOutboxEventEntries(
+          tx,
+          confirmedIncidents.map((inc: any) => ({
+            eventType: INCIDENT_OUTBOX_EVENT.RESOLVED,
+            aggregateId: inc.id,
+            payload: {
+              incidentId: inc.id,
+              siteId: inc.siteId,
+              oldStatus: inc.status,
+              newStatus: INCIDENT_STATUS.RESOLVED,
+              changedBy: validActorId,
+              reason: params.resolutionNote,
+              resolvedAt: now.toISOString(),
+              ...(params.sharedEvidence
+                ? { sharedEvidenceStorageKey: params.sharedEvidence.storageKey }
+                : {}),
+              timestamp: now.toISOString(),
+            },
+            status: "PENDING",
+          })),
+        );
+
+        return {
+          total: params.incidentIds.length,
+          resolvedCount: validIds.length,
+          newStatus: INCIDENT_STATUS.RESOLVED,
+          resolvedIds: validIds,
+          skippedIds: params.incidentIds.filter((id) => !resolvedSet.has(id)),
+          ...(params.sharedEvidence
+            ? { sharedEvidenceStorageKey: params.sharedEvidence.storageKey }
+            : {}),
+        };
+      },
+      DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+    );
+  }
+
+  async batchCloseIncidents(params: {
+    incidentIds: string[];
+    changedBy: string;
+    closeNote?: string;
+    siteFilter?: string[];
+    requiredActiveAssigneeId?: string;
+  }): Promise<BatchCloseResultDto> {
+    const validActorId = normalizeActorUuid(params.changedBy, false);
+    const finalReason = params.closeNote || "Đóng hồ sơ sự cố an toàn (hàng loạt)";
+    const now = new Date();
+
+    return this.db.$transaction(
+      async (tx: any) => {
+        const where: any = {
+          id: { in: params.incidentIds },
+          status: {
+            in: [INCIDENT_STATUS.RESOLVED, INCIDENT_STATUS.DISMISSED],
+          },
+        };
+
+        if (params.siteFilter && params.siteFilter.length > 0) {
+          where.siteId = { in: params.siteFilter };
+        }
+
+        if (params.requiredActiveAssigneeId) {
+          where.assignments = {
+            some: {
+              assignedTo: params.requiredActiveAssigneeId,
+              status: ASSIGNMENT_STATUS.ACTIVE,
+            },
+          };
+        }
+
+        const closableIncidents = await tx.incident.findMany({
+          where,
+          select: { id: true, siteId: true, status: true },
+        });
+
+        if (closableIncidents.length === 0) {
+          return {
+            total: params.incidentIds.length,
+            closedCount: 0,
+            newStatus: INCIDENT_STATUS.CLOSED,
+            closedIds: [],
+            skippedIds: [...params.incidentIds],
+          };
+        }
+
+        const validIds = closableIncidents.map((inc: any) => inc.id as string);
+        const closedSet = new Set(validIds);
+
+        await tx.incident.updateMany({
+          where: { id: { in: validIds } },
+          data: { status: INCIDENT_STATUS.CLOSED },
+        });
+
+        await this.createStatusHistoryEntries(
+          tx,
+          closableIncidents.map((inc: any) => ({
+            incidentId: inc.id,
+            oldStatus: inc.status,
+            newStatus: INCIDENT_STATUS.CLOSED,
+            changedBy: validActorId,
+            reason: finalReason,
+          })),
+        );
+
+        await this.createOutboxEventEntries(
+          tx,
+          closableIncidents.map((inc: any) => ({
+            eventType: INCIDENT_OUTBOX_EVENT.STATUS_CHANGED,
+            aggregateId: inc.id,
+            payload: {
+              incidentId: inc.id,
+              siteId: inc.siteId,
+              oldStatus: inc.status,
+              newStatus: INCIDENT_STATUS.CLOSED,
+              changedBy: validActorId,
+              reason: finalReason,
+              timestamp: now.toISOString(),
+            },
+            status: "PENDING",
+          })),
+        );
+
+        return {
+          total: params.incidentIds.length,
+          closedCount: validIds.length,
+          newStatus: INCIDENT_STATUS.CLOSED,
+          closedIds: validIds,
+          skippedIds: params.incidentIds.filter((id) => !closedSet.has(id)),
+        };
+      },
+      DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
+    );
+  }
+
   // ── Assignment Operations ──────────────────────────────────────────────────
-  async assignIncident(incidentId: string, assignedTo: string) {
+  async assignIncident(
+    incidentId: string,
+    assignedTo: string,
+    options?: {
+      siteId?: string;
+      assignedBy?: string;
+      note?: string;
+    },
+  ) {
+    const validAssigneeId = normalizeActorUuid(assignedTo, false);
+    const validAssignedBy =
+      options?.assignedBy && UUID_REGEX.test(options.assignedBy)
+        ? options.assignedBy
+        : undefined;
+    const now = new Date();
+
     return this.db.$transaction(
       async (tx: any) => {
         // Đóng các phân công đang active trước đó nếu có
@@ -1264,17 +1687,40 @@ export class IncidentRepository {
           },
           data: {
             status: ASSIGNMENT_STATUS.COMPLETED,
-            unassignedAt: new Date(),
+            unassignedAt: now,
           },
         });
 
-        return tx.incidentAssignment.create({
+        const assignment = await tx.incidentAssignment.create({
           data: {
             incidentId,
-            assignedTo: normalizeActorUuid(assignedTo, false),
+            assignedTo: validAssigneeId,
             status: ASSIGNMENT_STATUS.ACTIVE,
           },
         });
+
+        await this.createOutboxEventEntries(tx, [
+          {
+            eventType: INCIDENT_OUTBOX_EVENT.ASSIGNED,
+            aggregateId: incidentId,
+            payload: {
+              incidentId,
+              assignmentId: assignment.id,
+              ...(options?.siteId ? { siteId: options.siteId } : {}),
+              assignedTo: validAssigneeId,
+              ...(validAssignedBy ? { assignedBy: validAssignedBy } : {}),
+              ...(options?.note ? { note: options.note } : {}),
+              assignedAt:
+                assignment.assignedAt instanceof Date
+                  ? assignment.assignedAt.toISOString()
+                  : now.toISOString(),
+              timestamp: now.toISOString(),
+            },
+            status: "PENDING",
+          },
+        ]);
+
+        return assignment;
       },
       DEFAULT_INCIDENT_TRANSACTION_OPTIONS,
     );
@@ -1685,6 +2131,19 @@ export class IncidentRepository {
       where: { id: { in: ids } },
     });
     return result.count;
+  }
+
+  async countEvidencesByStorageKey(
+    storageKey: string,
+    excludeIds: string[] = [],
+  ): Promise<number> {
+    if (!storageKey) return 0;
+    return this.db.evidence.count({
+      where: {
+        storageKey,
+        ...(excludeIds.length > 0 ? { id: { notIn: excludeIds } } : {}),
+      },
+    });
   }
 
   async deleteEvidence(id: string) {

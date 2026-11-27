@@ -36,6 +36,12 @@ import {
   ResolveIncidentDto,
   CloseIncidentDto,
   CreateIncidentAssignmentDto,
+  BatchAssignIncidentsDto,
+  BatchAssignResultDto,
+  BatchResolveIncidentsDto,
+  BatchResolveResultDto,
+  BatchCloseIncidentsDto,
+  BatchCloseResultDto,
   CreateIncidentCommentDto,
   CreateEvidenceDto,
   EvidenceQueryDto,
@@ -85,7 +91,12 @@ export class IncidentService {
     data: CreateIncidentDto,
     actorId: string,
     context?: { cameraCode?: string; siteName?: string },
+    userContext?: IncidentUserContext,
   ) {
+    if (userContext) {
+      this.assertIncidentSiteAccess(data.siteId, userContext);
+    }
+
     if (data.initialEvidence?.storageKey && data.siteId) {
       const parts = data.initialEvidence.storageKey.split("/");
       if (parts.length >= 3 && isUuid(parts[1]) && parts[1] !== data.siteId) {
@@ -244,8 +255,9 @@ export class IncidentService {
     };
   }
 
-  async getIncidentById(id: string) {
+  async getIncidentById(id: string, userContext?: IncidentUserContext) {
     const incident = await this.getRawIncidentById(id);
+    this.assertIncidentSiteAccess(incident.siteId, userContext);
     const hasComments =
       Array.isArray(incident.comments) && incident.comments.length > 0;
     const hasAssignments =
@@ -300,6 +312,65 @@ export class IncidentService {
         ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
       ]),
     );
+  }
+
+  /**
+   * Fail-closed Site-level Ownership / BOLA guard cho toàn bộ endpoint tác động lên từng Incident.
+   */
+  private assertIncidentSiteAccess(
+    siteId: string | null | undefined,
+    userContext?: IncidentUserContext,
+  ): void {
+    const allowedSiteIds = this.resolveAllowedSiteIds(userContext);
+    if (allowedSiteIds === undefined) {
+      return;
+    }
+
+    if (allowedSiteIds.length === 0 || !siteId || !allowedSiteIds.includes(siteId)) {
+      throw new AppError(
+        "Bạn không có quyền truy cập hoặc thao tác trên sự cố thuộc công trường này",
+        403,
+        ERROR_CODE.FORBIDDEN,
+      );
+    }
+  }
+
+  private isManagerOrAdminRole(userRole?: string): boolean {
+    return (
+      userRole === ROLES.ADMIN ||
+      userRole === ROLES.SAFETY_MANAGER ||
+      userRole === ROLES.MANAGER
+    );
+  }
+
+  private async isStorageKeyReferencedElsewhere(
+    storageKey: string,
+    excludeIds: string[] = [],
+  ): Promise<boolean> {
+    if (typeof this.repository.countEvidencesByStorageKey !== "function") {
+      return false;
+    }
+    const remainingCount = await this.repository.countEvidencesByStorageKey(
+      storageKey,
+      excludeIds,
+    );
+    return remainingCount > 0;
+  }
+
+  private async assertAssigneeInSite(
+    siteId: string,
+    assignedTo: string,
+  ): Promise<IncidentSiteUserInfo> {
+    const userMap = await this.fetchSiteUserMap(siteId);
+    const matched = userMap.get(assignedTo);
+    if (!matched || matched.isActive === false) {
+      throw new AppError(
+        "Người được phân công không tồn tại, không hoạt động hoặc không thuộc công trường của sự cố này",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+    return matched;
   }
 
   private emptyIncidentPage(
@@ -429,8 +500,12 @@ export class IncidentService {
     return this.repository.findFeedbackDataset(query, siteFilter);
   }
 
-  async updateIncident(id: string, data: UpdateIncidentDto) {
-    const incident = await this.getIncidentById(id);
+  async updateIncident(
+    id: string,
+    data: UpdateIncidentDto,
+    userContext?: IncidentUserContext,
+  ) {
+    const incident = await this.getIncidentById(id, userContext);
 
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(
@@ -443,17 +518,34 @@ export class IncidentService {
     return this.repository.updateIncident(id, data);
   }
 
-  async deleteIncident(id: string) {
-    const incident = await this.getIncidentById(id);
+  async deleteIncident(id: string, userContext?: IncidentUserContext) {
+    const incident = await this.getIncidentById(id, userContext);
+
+    if (incident.status === INCIDENT_STATUS.CLOSED) {
+      throw new AppError(
+        "Không thể xóa sự cố đã đóng để bảo toàn hồ sơ và bằng chứng pháp lý",
+        400,
+        ERROR_CODE.BAD_REQUEST,
+      );
+    }
 
     // SEC-03: Dọn dẹp toàn bộ tệp bằng chứng liên quan trên Object Storage (MinIO/S3)
-    // để tránh rò rỉ hoặc để lại tệp mồ côi (orphaned objects) khi bản ghi bị xóa khỏi CSDL
+    // chỉ khi không còn bản ghi bằng chứng nào khác dùng chung storageKey đó (batch-resolve sharedEvidence)
     if (incident.evidences && incident.evidences.length > 0) {
+      const incidentEvidenceIds = incident.evidences
+        .map((ev: any) => ev.id)
+        .filter((evId: any): evId is string => typeof evId === "string");
       await Promise.all(
         incident.evidences.map(async (ev: any) => {
           if (ev.storageKey) {
             try {
-              await this.storage.deleteObject(ev.storageKey);
+              const stillReferenced = await this.isStorageKeyReferencedElsewhere(
+                ev.storageKey,
+                incidentEvidenceIds,
+              );
+              if (!stillReferenced) {
+                await this.storage.deleteObject(ev.storageKey);
+              }
             } catch (err) {
               console.warn(
                 `[IncidentService] Không thể dọn dẹp tệp MinIO '${ev.storageKey}' khi xóa sự cố:`,
@@ -469,8 +561,13 @@ export class IncidentService {
   }
 
   // ── Incident Lifecycle Transitions ─────────────────────────────────────────
-  async reviewIncident(id: string, dto: ReviewIncidentDto, actorId: string) {
-    const incident = await this.getIncidentById(id);
+  async reviewIncident(
+    id: string,
+    dto: ReviewIncidentDto,
+    actorId: string,
+    userContext?: IncidentUserContext,
+  ) {
+    const incident = await this.getIncidentById(id, userContext);
 
     if (incident.status !== INCIDENT_STATUS.PENDING_REVIEW) {
       throw new AppError(
@@ -534,16 +631,12 @@ export class IncidentService {
     dto: ResolveIncidentDto,
     actorId: string,
     userRole?: string,
+    userContext?: IncidentUserContext,
   ) {
-    const incident = await this.getIncidentById(id);
+    const incident = await this.getIncidentById(id, userContext);
 
     if (userRole) {
-      const isManagerOrAdmin =
-        userRole === ROLES.ADMIN ||
-        userRole === ROLES.SAFETY_MANAGER ||
-        userRole === ROLES.MANAGER;
-
-      if (!isManagerOrAdmin) {
+      if (!this.isManagerOrAdminRole(userRole)) {
         const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
         if (!isAssigned) {
           throw new AppError(
@@ -578,16 +671,12 @@ export class IncidentService {
     dto: CloseIncidentDto,
     actorId: string,
     userRole?: string,
+    userContext?: IncidentUserContext,
   ) {
-    const incident = await this.getIncidentById(id);
+    const incident = await this.getIncidentById(id, userContext);
 
     if (userRole) {
-      const isManagerOrAdmin =
-        userRole === ROLES.ADMIN ||
-        userRole === ROLES.SAFETY_MANAGER ||
-        userRole === ROLES.MANAGER;
-
-      if (!isManagerOrAdmin) {
+      if (!this.isManagerOrAdminRole(userRole)) {
         const isAssigned = await this.repository.isUserAssignedToIncident(id, actorId);
         if (!isAssigned) {
           throw new AppError(
@@ -619,26 +708,278 @@ export class IncidentService {
     });
   }
 
-  // ── Assignment & Comment Operations ────────────────────────────────────────
-  async assignIncident(id: string, dto: CreateIncidentAssignmentDto) {
-    const incident = await this.getIncidentById(id);
+  // ── Batch Workflow Operations ──────────────────────────────────────────────
+  async batchAssignIncidents(
+    dto: BatchAssignIncidentsDto,
+    actorId: string,
+    userContext?: IncidentUserContext,
+  ): Promise<BatchAssignResultDto> {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+
+    if (siteFilter !== undefined && siteFilter.length === 0) {
+      return {
+        total: uniqueIds.length,
+        assignedCount: 0,
+        assignedTo: dto.assignedTo,
+        assignedIds: [],
+        skippedIds: uniqueIds,
+      };
+    }
+
+    const candidates = await this.repository.findCandidateIncidentsForBatch({
+      incidentIds: uniqueIds,
+      statuses: [INCIDENT_STATUS.CONFIRMED],
+      siteFilter,
+    });
+
+    if (candidates.length === 0) {
+      return {
+        total: uniqueIds.length,
+        assignedCount: 0,
+        assignedTo: dto.assignedTo,
+        assignedIds: [],
+        skippedIds: uniqueIds,
+      };
+    }
+
+    const uniqueSiteIds = Array.from(
+      new Set(candidates.map((c) => c.siteId).filter(Boolean)),
+    );
+    const siteUserMaps = new Map<string, Map<string, IncidentSiteUserInfo>>();
+    await Promise.all(
+      uniqueSiteIds.map(async (siteId) => {
+        siteUserMaps.set(siteId, await this.fetchSiteUserMap(siteId));
+      }),
+    );
+
+    let resolvedAssignee: IncidentSiteUserInfo | undefined;
+    const assignableIncidents = candidates.filter((inc) => {
+      const siteUsers = siteUserMaps.get(inc.siteId);
+      const matched = siteUsers?.get(dto.assignedTo);
+      if (matched && matched.isActive !== false) {
+        resolvedAssignee = resolvedAssignee || matched;
+        return true;
+      }
+      return false;
+    });
+
+    if (assignableIncidents.length === 0) {
+      throw new AppError(
+        "Người được phân công không tồn tại, không hoạt động hoặc không thuộc công trường của các sự cố được chọn",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const assignedIds = await this.repository.batchAssignIncidents({
+      incidents: assignableIncidents.map((inc) => ({
+        id: inc.id,
+        siteId: inc.siteId,
+      })),
+      assignedTo: dto.assignedTo,
+      assignedBy: actorId,
+      note: dto.note,
+    });
+
+    const assignedSet = new Set(assignedIds);
+    const skippedIds = uniqueIds.filter((id) => !assignedSet.has(id));
+    const primaryIncident = assignableIncidents[0];
+    const assignedToName =
+      resolvedAssignee?.fullName?.trim() ||
+      resolvedAssignee?.email?.trim() ||
+      undefined;
 
     if (
-      incident.status === INCIDENT_STATUS.CLOSED ||
-      incident.status === INCIDENT_STATUS.DISMISSED
+      primaryIncident &&
+      typeof this.notification?.dispatchIncidentNotification === "function"
     ) {
+      this.notification
+        .dispatchIncidentNotification({
+          incidentId: primaryIncident.id,
+          siteId: primaryIncident.siteId,
+          cameraId: primaryIncident.cameraId,
+          violationType: primaryIncident.violationType,
+          severity: primaryIncident.severity,
+          description:
+            dto.note ||
+            `Bạn được phân công xử lý nhóm ${assignedIds.length} sự cố vi phạm PPE`,
+          detectedAt: primaryIncident.detectedAt,
+          recipientUserIds: [dto.assignedTo],
+        })
+        .catch((err) => {
+          console.warn(
+            "[IncidentService] Không thể phát thông báo phân công hàng loạt:",
+            err?.message || err,
+          );
+        });
+    }
+
+    return {
+      total: uniqueIds.length,
+      assignedCount: assignedIds.length,
+      assignedTo: dto.assignedTo,
+      ...(assignedToName ? { assignedToName } : {}),
+      assignedIds,
+      skippedIds,
+    };
+  }
+
+  async batchResolveIncidents(
+    dto: BatchResolveIncidentsDto,
+    actorId: string,
+    userRole?: string,
+    userContext?: IncidentUserContext,
+  ): Promise<BatchResolveResultDto> {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+
+    if (siteFilter !== undefined && siteFilter.length === 0) {
+      return {
+        total: uniqueIds.length,
+        resolvedCount: 0,
+        newStatus: INCIDENT_STATUS.RESOLVED,
+        resolvedIds: [],
+        skippedIds: uniqueIds,
+      };
+    }
+
+    if (dto.sharedEvidence?.storageKey) {
+      if (!dto.sharedEvidence.storageKey.startsWith("evidences/")) {
+        throw new AppError(
+          "storageKey phải bắt đầu bằng tiền tố 'evidences/'",
+          400,
+          ERROR_CODE.VALIDATION_ERROR,
+        );
+      }
+      const parts = dto.sharedEvidence.storageKey.split("/");
+      if (parts.length >= 3 && isUuid(parts[1]) && siteFilter && !siteFilter.includes(parts[1])) {
+        throw new AppError(
+          "storageKey của bằng chứng dùng chung không thuộc phạm vi công trường được phép",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
+    const effectiveRole = userRole || userContext?.role;
+    const requiredActiveAssigneeId =
+      effectiveRole && !this.isManagerOrAdminRole(effectiveRole)
+        ? actorId
+        : undefined;
+
+    return this.repository.batchResolveIncidents({
+      incidentIds: uniqueIds,
+      changedBy: actorId,
+      resolutionNote: dto.resolutionNote,
+      siteFilter,
+      requiredActiveAssigneeId,
+      sharedEvidence: dto.sharedEvidence,
+    });
+  }
+
+  async batchCloseIncidents(
+    dto: BatchCloseIncidentsDto,
+    actorId: string,
+    userRole?: string,
+    userContext?: IncidentUserContext,
+  ): Promise<BatchCloseResultDto> {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+
+    if (siteFilter !== undefined && siteFilter.length === 0) {
+      return {
+        total: uniqueIds.length,
+        closedCount: 0,
+        newStatus: INCIDENT_STATUS.CLOSED,
+        closedIds: [],
+        skippedIds: uniqueIds,
+      };
+    }
+
+    const effectiveRole = userRole || userContext?.role;
+    const requiredActiveAssigneeId =
+      effectiveRole && !this.isManagerOrAdminRole(effectiveRole)
+        ? actorId
+        : undefined;
+
+    return this.repository.batchCloseIncidents({
+      incidentIds: uniqueIds,
+      changedBy: actorId,
+      closeNote: dto.closeNote,
+      siteFilter,
+      requiredActiveAssigneeId,
+    });
+  }
+
+  // ── Assignment & Comment Operations ────────────────────────────────────────
+  async assignIncident(
+    id: string,
+    dto: CreateIncidentAssignmentDto,
+    actorId?: string,
+    userContext?: IncidentUserContext,
+  ) {
+    const incident = await this.getIncidentById(id, userContext);
+
+    if (incident.status !== INCIDENT_STATUS.CONFIRMED) {
       throw new AppError(
-        `Không thể phân công xử lý sự cố đã ở trạng thái ${incident.status}`,
+        `Chỉ có thể phân công xử lý sự cố đã được xác nhận (CONFIRMED). Trạng thái hiện tại: ${incident.status}`,
         400,
         ERROR_CODE.BAD_REQUEST,
       );
     }
 
-    return this.repository.assignIncident(id, dto.assignedTo);
+    const assignee = await this.assertAssigneeInSite(
+      incident.siteId,
+      dto.assignedTo,
+    );
+
+    const assignment = await this.repository.assignIncident(
+      id,
+      dto.assignedTo,
+      {
+        siteId: incident.siteId,
+        assignedBy: actorId,
+        note: dto.note,
+      },
+    );
+
+    if (typeof this.notification?.dispatchIncidentNotification === "function") {
+      this.notification
+        .dispatchIncidentNotification({
+          incidentId: incident.id,
+          siteId: incident.siteId,
+          cameraId: incident.cameraId,
+          violationType: incident.violationType,
+          severity: incident.severity,
+          description:
+            dto.note ||
+            incident.description ||
+            "Bạn vừa được phân công xử lý sự cố vi phạm PPE",
+          detectedAt: incident.detectedAt,
+          recipientUserIds: [dto.assignedTo],
+        })
+        .catch((err) => {
+          console.warn(
+            "[IncidentService] Không thể tự động phát thông báo phân công sự cố:",
+            err?.message || err,
+          );
+        });
+    }
+
+    const assignedToName =
+      assignee.fullName?.trim() || assignee.email?.trim() || undefined;
+    return assignedToName
+      ? { ...assignment, assignedToName }
+      : assignment;
   }
 
-  async getIncidentAssignments(id: string) {
+  async getIncidentAssignments(
+    id: string,
+    userContext?: IncidentUserContext,
+  ) {
     const incident = await this.getRawIncidentById(id);
+    this.assertIncidentSiteAccess(incident.siteId, userContext);
     const assignments = await this.repository.findAssignmentsByIncidentId(id);
     if (!Array.isArray(assignments) || assignments.length === 0) {
       return assignments;
@@ -657,8 +998,10 @@ export class IncidentService {
     dto: CreateIncidentCommentDto,
     actorId: string,
     actorContext?: { email?: string; role?: string; fullName?: string },
+    userContext?: IncidentUserContext,
   ) {
     const incident = await this.getRawIncidentById(id);
+    this.assertIncidentSiteAccess(incident.siteId, userContext);
 
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(
@@ -736,8 +1079,9 @@ export class IncidentService {
     return enrichedComment;
   }
 
-  async getIncidentComments(id: string) {
+  async getIncidentComments(id: string, userContext?: IncidentUserContext) {
     const incident = await this.getRawIncidentById(id);
+    this.assertIncidentSiteAccess(incident.siteId, userContext);
     const comments = await this.repository.findCommentsByIncidentId(id);
     if (!Array.isArray(comments) || comments.length === 0) {
       return comments;
@@ -752,8 +1096,12 @@ export class IncidentService {
   }
 
   // ── Evidence Operations ────────────────────────────────────────────────────
-  async addEvidence(incidentId: string, dto: CreateEvidenceDto) {
-    const incident = await this.getIncidentById(incidentId);
+  async addEvidence(
+    incidentId: string,
+    dto: CreateEvidenceDto,
+    userContext?: IncidentUserContext,
+  ) {
+    const incident = await this.getIncidentById(incidentId, userContext);
 
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(
@@ -936,7 +1284,13 @@ export class IncidentService {
 
     const deleted = await this.repository.deleteEvidence(id);
     if (evidence.storageKey) {
-      await this.storage.deleteObject(evidence.storageKey);
+      const stillReferenced = await this.isStorageKeyReferencedElsewhere(
+        evidence.storageKey,
+        [id],
+      );
+      if (!stillReferenced) {
+        await this.storage.deleteObject(evidence.storageKey);
+      }
     }
     return deleted;
   }
@@ -1003,10 +1357,24 @@ export class IncidentService {
 
       await this.repository.deleteEvidencesByIds(deletableIds);
 
+      const keysToCheck = Array.from(
+        new Set(
+          deletableEvidences
+            .map((ev) => ev.storageKey)
+            .filter((k): k is string => Boolean(k)),
+        ),
+      );
+
       await Promise.allSettled(
-        deletableEvidences
-          .filter((ev) => Boolean(ev.storageKey))
-          .map((ev) => this.storage.deleteObject(ev.storageKey)),
+        keysToCheck.map(async (storageKey) => {
+          const stillReferenced = await this.isStorageKeyReferencedElsewhere(
+            storageKey,
+            deletableIds,
+          );
+          if (!stillReferenced) {
+            await this.storage.deleteObject(storageKey);
+          }
+        }),
       );
     }
 
@@ -1067,7 +1435,7 @@ export class IncidentService {
     _actorId: string,
     userContext?: IncidentUserContext,
   ): Promise<EvidenceUploadUrlResponseDto> {
-    const incident = await this.getIncidentById(dto.incidentId);
+    const incident = await this.getIncidentById(dto.incidentId, userContext);
     this.assertEvidenceSiteAccess({ incident }, userContext);
 
     if (incident.status === INCIDENT_STATUS.CLOSED) {
@@ -1123,7 +1491,7 @@ export class IncidentService {
       );
     }
 
-    const incident = await this.getIncidentById(dto.incidentId);
+    const incident = await this.getIncidentById(dto.incidentId, userContext);
     this.assertEvidenceSiteAccess({ incident }, userContext);
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(

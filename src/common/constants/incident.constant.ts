@@ -109,6 +109,7 @@ export const VALID_INCIDENT_TRANSITIONS: Record<
  */
 export const INCIDENT_OUTBOX_EVENT = {
   CREATED: "ppe.incident.created",
+  ASSIGNED: "ppe.incident.assigned",
   RESOLVED: "ppe.incident.resolved",
   STATUS_CHANGED: "ppe.incident.status_changed",
   COMMENTED: "ppe.incident.commented",
