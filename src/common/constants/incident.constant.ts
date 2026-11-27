@@ -68,10 +68,24 @@ export type AssignmentStatus =
 export const EVIDENCE_ACCESS_ACTION = {
   VIEW: "VIEW",
   DOWNLOAD: "DOWNLOAD",
+  VERIFY: "VERIFY",
+  DELETE: "DELETE",
 } as const;
 
 export type EvidenceAccessAction =
   (typeof EVIDENCE_ACCESS_ACTION)[keyof typeof EVIDENCE_ACCESS_ACTION];
+
+/**
+ * Bộ lọc vòng đời sự cố gắn với bằng chứng
+ */
+export const EVIDENCE_LIFECYCLE_FILTER = {
+  ACTIVE: "ACTIVE",
+  OPEN: "OPEN",
+  ARCHIVED: "ARCHIVED",
+} as const;
+
+export type EvidenceLifecycleFilter =
+  (typeof EVIDENCE_LIFECYCLE_FILTER)[keyof typeof EVIDENCE_LIFECYCLE_FILTER];
 
 /**
  * Bản đồ các bước chuyển trạng thái hợp lệ trong Incident Lifecycle

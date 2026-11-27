@@ -527,7 +527,7 @@ describe("AI Vision Incident Ingestion (HTTP + Kafka)", () => {
     const parsedBody = JSON.parse(String(requests[0].init.body));
     assert.equal(parsedBody.incidentId, incId);
     assert.equal(parsedBody.cameraCode, "CAM-01");
-    assert.equal(parsedBody.evidenceUrl, `/api/v1/incidents/evidences/${evId}/download`);
+    assert.equal(parsedBody.evidenceUrl, `/api/v1/evidences/${evId}/download-url`);
 
     // Lần 2: Duplicate violationId (markDeduplicatedIncident) -> không bắn trùng thông báo
     await svc.createIncident(

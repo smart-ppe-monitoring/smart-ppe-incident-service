@@ -105,10 +105,17 @@ const envSchema = z
 
     // ── MinIO / PPE Evidence Object Storage (BE-07) ──────────────────────────
     PPE_MINIO_ENDPOINT: z.string().default("http://localhost:9000"),
+    PPE_MINIO_PUBLIC_ENDPOINT: z.string().default(""),
+    MINIO_ENDPOINT: z.string().default(""),
+    MINIO_PUBLIC_ENDPOINT: z.string().default(""),
     PPE_MINIO_ROOT_USER: z.string().default("minio_admin"),
+    MINIO_ACCESS_KEY_ID: z.string().default(""),
     PPE_MINIO_ROOT_PASSWORD: z.string().default("minio_admin_secret"),
+    MINIO_SECRET_ACCESS_KEY: z.string().default(""),
     PPE_MINIO_BUCKET_EVIDENCES: z.string().default("ppe-evidences"),
+    MINIO_BUCKET_EVIDENCES: z.string().default(""),
     PPE_MINIO_FORCE_PATH_STYLE: z.string().default("true"),
+    MINIO_FORCE_PATH_STYLE: z.string().default(""),
 
     // ── Notification Service & Worker (Phase 5: Satellite Microservice) ──────
     NOTIFICATION_WORKER_ENABLED: z.string().default("true"),
@@ -511,11 +518,18 @@ export const envConfig = {
     serviceUrl: _env.INCIDENT_SERVICE_URL,
   },
   minio: {
-    endpoint: _env.PPE_MINIO_ENDPOINT,
-    accessKeyId: _env.PPE_MINIO_ROOT_USER,
-    secretAccessKey: _env.PPE_MINIO_ROOT_PASSWORD,
-    bucketEvidences: _env.PPE_MINIO_BUCKET_EVIDENCES,
-    forcePathStyle: _env.PPE_MINIO_FORCE_PATH_STYLE !== "false",
+    endpoint: _env.MINIO_ENDPOINT.trim() || _env.PPE_MINIO_ENDPOINT,
+    publicEndpoint:
+      (_env.MINIO_PUBLIC_ENDPOINT || _env.PPE_MINIO_PUBLIC_ENDPOINT || "").trim(),
+    accessKeyId: _env.MINIO_ACCESS_KEY_ID.trim() || _env.PPE_MINIO_ROOT_USER,
+    secretAccessKey:
+      _env.MINIO_SECRET_ACCESS_KEY.trim() || _env.PPE_MINIO_ROOT_PASSWORD,
+    bucketEvidences:
+      _env.MINIO_BUCKET_EVIDENCES.trim() || _env.PPE_MINIO_BUCKET_EVIDENCES,
+    forcePathStyle:
+      _env.MINIO_FORCE_PATH_STYLE.trim() !== ""
+        ? _env.MINIO_FORCE_PATH_STYLE !== "false"
+        : _env.PPE_MINIO_FORCE_PATH_STYLE !== "false",
   },
 
 

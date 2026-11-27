@@ -22,7 +22,11 @@ import {
   FeedbackDatasetLabel,
   CreateEvidenceDto,
   EvidenceQueryDto,
+  EvidenceSummaryQueryDto,
+  EvidenceSummaryDto,
   CreateEvidenceAccessLogDto,
+  EvidenceAccessLogsQueryDto,
+  EvidenceAccessLogItemDto,
   PaginatedResultDto,
   IncidentItemDto,
 } from "./incident.dto";
@@ -32,9 +36,22 @@ import {
   INCIDENT_OUTBOX_EVENT,
   ASSIGNMENT_STATUS,
   EVIDENCE_TYPE,
+  EVIDENCE_LIFECYCLE_FILTER,
+  EvidenceType,
 } from "../../common/constants/incident.constant";
 import { AppError } from "../../common/errors/app-error";
 import { ERROR_CODE } from "../../common/errors/error-code";
+import { isUuid } from "../../common/helpers/uuid.helper";
+
+const COMPACT_INCIDENT_SELECT = {
+  id: true,
+  siteId: true,
+  cameraId: true,
+  violationType: true,
+  severity: true,
+  status: true,
+  detectedAt: true,
+} as const;
 
 /**
  * Chuyển đổi dữ liệu Evidence an toàn với kiểu BigInt của trường fileSize
@@ -1400,13 +1417,7 @@ export class IncidentRepository {
       include: {
         metadata: true,
         incident: {
-          select: {
-            id: true,
-            siteId: true,
-            cameraId: true,
-            violationType: true,
-            status: true,
-          },
+          select: COMPACT_INCIDENT_SELECT,
         },
       },
     });
@@ -1414,23 +1425,163 @@ export class IncidentRepository {
     return evidence ? serializeEvidence(evidence) : null;
   }
 
+  private buildEvidenceWhere(
+    query: EvidenceSummaryQueryDto,
+    siteFilter?: string[],
+  ): IncidentPrisma.EvidenceWhereInput {
+    const baseWhere: IncidentPrisma.EvidenceWhereInput = {};
+    const andConditions: IncidentPrisma.EvidenceWhereInput[] = [];
+
+    if (query.incidentId) {
+      baseWhere.incidentId = query.incidentId;
+    }
+
+    if (
+      query.cameraId &&
+      Array.isArray(query.cameraIds) &&
+      query.cameraIds.length > 0
+    ) {
+      baseWhere.cameraId = query.cameraIds.includes(query.cameraId)
+        ? query.cameraId
+        : { in: [] };
+    } else if (query.cameraId) {
+      baseWhere.cameraId = query.cameraId;
+    } else if (Array.isArray(query.cameraIds) && query.cameraIds.length > 0) {
+      baseWhere.cameraId = { in: query.cameraIds };
+    }
+
+    if (query.evidenceType) {
+      baseWhere.evidenceType = query.evidenceType;
+    }
+
+    const fromDate = query.startDate || query.fromDate;
+    const toDate = query.endDate || query.toDate;
+    if (fromDate || toDate) {
+      baseWhere.capturedAt = {};
+      if (fromDate) {
+        baseWhere.capturedAt.gte = new Date(fromDate);
+      }
+      if (toDate) {
+        baseWhere.capturedAt.lte = new Date(toDate);
+      }
+    }
+
+    const incidentFilter: IncidentPrisma.IncidentWhereInput = {};
+    if (query.siteId) {
+      incidentFilter.siteId =
+        !siteFilter || siteFilter.includes(query.siteId)
+          ? query.siteId
+          : { in: [] };
+    } else if (siteFilter) {
+      incidentFilter.siteId = { in: siteFilter };
+    }
+
+    if (query.violationType) {
+      incidentFilter.violationType = query.violationType;
+    }
+    if (query.incidentStatus) {
+      incidentFilter.status = query.incidentStatus;
+    }
+
+    if (Object.keys(incidentFilter).length > 0) {
+      baseWhere.incident = { is: incidentFilter };
+    }
+
+    if (query.lifecycle) {
+      if (
+        query.lifecycle === EVIDENCE_LIFECYCLE_FILTER.ACTIVE ||
+        query.lifecycle === EVIDENCE_LIFECYCLE_FILTER.OPEN
+      ) {
+        andConditions.push({
+          incident: { is: { status: { not: INCIDENT_STATUS.CLOSED } } },
+        });
+      } else if (
+        query.lifecycle === EVIDENCE_LIFECYCLE_FILTER.ARCHIVED ||
+        query.lifecycle === INCIDENT_STATUS.CLOSED
+      ) {
+        andConditions.push({
+          incident: { is: { status: INCIDENT_STATUS.CLOSED } },
+        });
+      } else {
+        andConditions.push({
+          incident: { is: { status: query.lifecycle } },
+        });
+      }
+    }
+
+    if (query.hasChecksum === true) {
+      andConditions.push({
+        metadata: {
+          is: {
+            checksum: { not: null },
+            NOT: { checksum: "" },
+          },
+        },
+      });
+    } else if (query.hasChecksum === false) {
+      andConditions.push({
+        OR: [
+          { metadata: { is: null } },
+          { metadata: { is: { checksum: null } } },
+          { metadata: { is: { checksum: "" } } },
+        ],
+      });
+    }
+
+    const rawSearch = query.search?.trim();
+    if (rawSearch) {
+      const searchOr: IncidentPrisma.EvidenceWhereInput[] = [
+        { fileName: { contains: rawSearch, mode: "insensitive" } },
+        { storageKey: { contains: rawSearch, mode: "insensitive" } },
+        { mimeType: { contains: rawSearch, mode: "insensitive" } },
+        {
+          metadata: {
+            is: { checksum: { contains: rawSearch, mode: "insensitive" } },
+          },
+        },
+        {
+          incident: {
+            is: { description: { contains: rawSearch, mode: "insensitive" } },
+          },
+        },
+        {
+          incident: {
+            is: { violationType: { contains: rawSearch, mode: "insensitive" } },
+          },
+        },
+      ];
+
+      if (isUuid(rawSearch)) {
+        searchOr.push(
+          { id: rawSearch },
+          { incidentId: rawSearch },
+          { cameraId: rawSearch },
+          { incident: { is: { siteId: rawSearch } } },
+        );
+      }
+
+      andConditions.push({ OR: searchOr });
+    }
+
+    if (andConditions.length === 0) {
+      return baseWhere;
+    }
+
+    return {
+      ...baseWhere,
+      AND: andConditions,
+    };
+  }
+
   async findAllEvidences(
     query: EvidenceQueryDto,
+    siteFilter?: string[],
   ): Promise<PaginatedResultDto<any>> {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const pagination = calculatePaginationSkip(page, limit);
 
-    const where: IncidentPrisma.EvidenceWhereInput = {};
-    if (query.incidentId) {
-      where.incidentId = query.incidentId;
-    }
-    if (query.cameraId) {
-      where.cameraId = query.cameraId;
-    }
-    if (query.evidenceType) {
-      where.evidenceType = query.evidenceType;
-    }
+    const where = this.buildEvidenceWhere(query, siteFilter);
 
     const sortOrder: IncidentPrisma.SortOrder = query.sortOrder || "desc";
     const orderBy: IncidentPrisma.EvidenceOrderByWithRelationInput = query.sortBy
@@ -1446,6 +1597,9 @@ export class IncidentRepository {
         orderBy,
         include: {
           metadata: true,
+          incident: {
+            select: COMPACT_INCIDENT_SELECT,
+          },
         },
       }),
     ]);
@@ -1454,6 +1608,83 @@ export class IncidentRepository {
       data: items.map((item: any) => serializeEvidence(item)),
       meta: formatPaginationMeta(pagination.page, pagination.limit, total),
     };
+  }
+
+  async getEvidencesSummary(
+    query: EvidenceSummaryQueryDto,
+    siteFilter?: string[],
+  ): Promise<EvidenceSummaryDto> {
+    const where = this.buildEvidenceWhere(query, siteFilter);
+
+    const [agg, grouped, withChecksumCount] = await Promise.all([
+      this.db.evidence.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { fileSize: true },
+      }),
+      this.db.evidence.groupBy({
+        by: ["evidenceType"],
+        where,
+        _count: { _all: true },
+      }),
+      this.db.evidence.count({
+        where: {
+          ...where,
+          metadata: {
+            is: {
+              checksum: { not: null },
+              NOT: { checksum: "" },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const byType: Record<EvidenceType, number> = {
+      [EVIDENCE_TYPE.SNAPSHOT]: 0,
+      [EVIDENCE_TYPE.REFERENCE_SNAPSHOT]: 0,
+      [EVIDENCE_TYPE.VIDEO_CLIP]: 0,
+    };
+
+    for (const row of grouped) {
+      const evType = row.evidenceType as EvidenceType;
+      if (evType in byType) {
+        byType[evType] = row._count._all;
+      }
+    }
+
+    const rawBytes = agg?._sum?.fileSize ?? 0;
+    const totalBytes =
+      typeof rawBytes === "bigint" ? Number(rawBytes) : Number(rawBytes || 0);
+
+    return {
+      total: agg?._count?._all ?? 0,
+      byType,
+      totalBytes,
+      withChecksumCount,
+    };
+  }
+
+  async findEvidencesByIds(ids: string[]) {
+    if (!ids || ids.length === 0) return [];
+    const items = await this.db.evidence.findMany({
+      where: { id: { in: ids } },
+      include: {
+        metadata: true,
+        incident: {
+          select: COMPACT_INCIDENT_SELECT,
+        },
+      },
+    });
+    return items.map((item: any) => serializeEvidence(item));
+  }
+
+  async deleteEvidencesByIds(ids: string[]): Promise<number> {
+    if (!ids || ids.length === 0) return 0;
+    const result = await this.db.evidence.deleteMany({
+      where: { id: { in: ids } },
+    });
+    return result.count;
   }
 
   async deleteEvidence(id: string) {
@@ -1471,6 +1702,35 @@ export class IncidentRepository {
         action: data.action,
       },
     });
+  }
+
+  async findEvidenceAccessLogs(
+    evidenceId: string,
+    query: EvidenceAccessLogsQueryDto = {},
+  ): Promise<PaginatedResultDto<EvidenceAccessLogItemDto>> {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const pagination = calculatePaginationSkip(page, limit);
+
+    const where: IncidentPrisma.EvidenceAccessLogWhereInput = {
+      evidenceId,
+      ...(query.action ? { action: query.action } : {}),
+    };
+
+    const [total, items] = await Promise.all([
+      this.db.evidenceAccessLog.count({ where }),
+      this.db.evidenceAccessLog.findMany({
+        where,
+        skip: pagination.skip,
+        take: pagination.take,
+        orderBy: { accessedAt: "desc" },
+      }),
+    ]);
+
+    return {
+      data: items as unknown as EvidenceAccessLogItemDto[],
+      meta: formatPaginationMeta(pagination.page, pagination.limit, total),
+    };
   }
 
   async checkDatabaseHealth(): Promise<boolean> {

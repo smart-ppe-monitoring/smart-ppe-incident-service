@@ -22,6 +22,9 @@ import {
   createIncidentCommentSchema,
   createEvidenceSchema,
   evidenceQuerySchema,
+  evidenceSummaryQuerySchema,
+  evidenceAccessLogsQuerySchema,
+  batchDeleteEvidencesSchema,
 } from "./incident.validation";
 import {
   requestEvidenceUploadUrlSchema,
@@ -204,11 +207,36 @@ evidenceRouter.post(
 );
 
 evidenceRouter.get(
+  "/summary",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
+  validate(evidenceSummaryQuerySchema, "query"),
+  incidentController.getEvidencesSummary,
+);
+
+evidenceRouter.post(
+  "/batch-delete",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_DELETE),
+  validate(batchDeleteEvidencesSchema),
+  incidentController.batchDeleteEvidences,
+);
+
+evidenceRouter.get(
   "/",
   authMiddleware,
   requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
   validate(evidenceQuerySchema, "query"),
   incidentController.findAllEvidences,
+);
+
+evidenceRouter.get(
+  "/:id/access-logs",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_INCIDENT_READ),
+  validate(evidenceIdParamSchema, "params"),
+  validate(evidenceAccessLogsQuerySchema, "query"),
+  incidentController.getEvidenceAccessLogs,
 );
 
 evidenceRouter.get(

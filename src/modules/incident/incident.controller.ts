@@ -14,6 +14,9 @@ import {
   CreateIncidentCommentDto,
   CreateEvidenceDto,
   EvidenceQueryDto,
+  EvidenceSummaryQueryDto,
+  EvidenceAccessLogsQueryDto,
+  BatchDeleteEvidencesDto,
 } from "./incident.dto";
 import {
   RequestEvidenceUploadUrlDto,
@@ -311,14 +314,7 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = req.user?.id;
-      const userRole = req.user?.role;
-      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
-      const userSiteIds = req.user?.siteIds;
-      const result = await this.service.getEvidenceById(id, actorId, {
-        role: userRole,
-        siteId: userSiteId,
-        siteIds: userSiteIds,
-      });
+      const result = await this.service.getEvidenceById(id, actorId, req.user);
       res.json({
         success: true,
         data: result,
@@ -335,7 +331,7 @@ export class IncidentController {
   ) => {
     try {
       const query = req.query;
-      const result = await this.service.getAllEvidences(query);
+      const result = await this.service.getAllEvidences(query, req.user);
       res.json({
         success: true,
         data: result.data,
@@ -346,13 +342,72 @@ export class IncidentController {
     }
   };
 
-  deleteEvidence = async (req: Request, res: Response, next: NextFunction) => {
+  getEvidencesSummary = async (
+    req: Request<unknown, unknown, unknown, EvidenceSummaryQueryDto>,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
-      const { id } = req.params;
-      const result = await this.service.deleteEvidence(id);
+      const result = await this.service.getEvidencesSummary(
+        req.query,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  deleteEvidence = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const result = await this.service.deleteEvidence(id, req.user);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  batchDeleteEvidences = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const body = req.body as BatchDeleteEvidencesDto;
+      const result = await this.service.batchDeleteEvidences(body, req.user);
+      res.json({
+        success: true,
+        message: `Đã xóa thành công ${result.deletedCount}/${result.total} bằng chứng`,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getEvidenceAccessLogs = async (
+    req: Request<{ id: string }, unknown, unknown, EvidenceAccessLogsQueryDto>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { id } = req.params;
+      const result = await this.service.getEvidenceAccessLogs(
+        id,
+        req.query,
+        req.user,
+      );
+      res.json({
+        success: true,
+        data: result.data,
+        meta: result.meta,
       });
     } catch (error) {
       next(error);
@@ -368,7 +423,11 @@ export class IncidentController {
     try {
       const actorId = getActorId(req);
       const body = req.body as RequestEvidenceUploadUrlDto;
-      const result = await this.service.requestEvidenceUploadUrl(body, actorId);
+      const result = await this.service.requestEvidenceUploadUrl(
+        body,
+        actorId,
+        req.user,
+      );
       res.status(200).json({
         success: true,
         data: result,
@@ -397,6 +456,7 @@ export class IncidentController {
         body,
         req.file,
         actorId,
+        req.user,
       );
       res.status(201).json({
         success: true,
@@ -415,9 +475,6 @@ export class IncidentController {
     try {
       const { id } = req.params;
       const actorId = req.user?.id;
-      const userRole = req.user?.role;
-      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
-      const userSiteIds = req.user?.siteIds;
       const query = req.query as unknown as DownloadUrlQueryDto;
       const expiresIn = query.expiresInSeconds
         ? Number(query.expiresInSeconds)
@@ -430,11 +487,7 @@ export class IncidentController {
         actorId,
         expiresIn,
         action,
-        {
-          role: userRole,
-          siteId: userSiteId,
-          siteIds: userSiteIds,
-        },
+        req.user,
       );
       res.json({
         success: true,
@@ -452,14 +505,11 @@ export class IncidentController {
   ) => {
     try {
       const { id } = req.params;
-      const userRole = req.user?.role;
-      const userSiteId = req.user?.siteId || (req.headers["x-site-id"] as string);
-      const userSiteIds = req.user?.siteIds;
-      const result = await this.service.verifyEvidenceIntegrity(id, {
-        role: userRole,
-        siteId: userSiteId,
-        siteIds: userSiteIds,
-      });
+      const result = await this.service.verifyEvidenceIntegrity(
+        id,
+        req.user,
+        req.user?.id,
+      );
       res.json({
         success: true,
         data: result,

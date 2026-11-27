@@ -15,6 +15,9 @@ import {
   createEvidenceSchema,
   evidenceIdParamSchema,
   evidenceQuerySchema,
+  evidenceSummaryQuerySchema,
+  evidenceAccessLogsQuerySchema,
+  batchDeleteEvidencesSchema,
 } from "./incident.validation";
 import {
   requestEvidenceUploadUrlSchema,
@@ -500,14 +503,106 @@ export function registerIncidentOpenApi(): void {
 
   openapiRegistry.registerPath({
     method: "get",
+    path: "/evidences/summary",
+    tags: ["Evidences"],
+    summary: "Thống kê tổng hợp bằng chứng số theo loại, dung lượng và checksum (tuân thủ site-scoping)",
+    security: [{ BearerAuth: [] }],
+    request: { query: evidenceSummaryQuerySchema },
+    responses: {
+      200: {
+        description: "Lấy thống kê bằng chứng thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.object({
+                total: z.number(),
+                byType: z.record(z.number()),
+                totalBytes: z.number(),
+                withChecksumCount: z.number(),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/evidences/batch-delete",
+    tags: ["Evidences"],
+    summary: "Xóa hàng loạt bằng chứng số (giới hạn 100, kiểm tra site-scoping & chặn sự cố CLOSED)",
+    security: [{ BearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": { schema: batchDeleteEvidencesSchema },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Xóa hàng loạt bằng chứng thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              message: z.string(),
+              data: z.object({
+                total: z.number(),
+                deletedCount: z.number(),
+                deletedIds: z.array(z.string()),
+                skippedIds: z.array(z.string()),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "get",
     path: "/evidences",
     tags: ["Evidences"],
-    summary: "Danh sách bằng chứng số (phân trang & lọc)",
+    summary: "Danh sách bằng chứng số (phân trang, lọc site/sự cố/checksum/thời gian, kèm tóm tắt incident)",
     security: [{ BearerAuth: [] }],
     request: { query: evidenceQuerySchema },
     responses: {
       200: {
         description: "Lấy danh sách bằng chứng thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.array(z.any()),
+              meta: z.object({
+                total: z.number(),
+                page: z.number(),
+                limit: z.number(),
+                totalPages: z.number(),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/evidences/{id}/access-logs",
+    tags: ["Evidences"],
+    summary: "Nhật ký truy vết truy cập bằng chứng số (VIEW / DOWNLOAD / VERIFY / DELETE)",
+    security: [{ BearerAuth: [] }],
+    request: {
+      params: evidenceIdParamSchema,
+      query: evidenceAccessLogsQuerySchema,
+    },
+    responses: {
+      200: {
+        description: "Lấy nhật ký truy cập bằng chứng thành công",
         content: {
           "application/json": {
             schema: z.object({

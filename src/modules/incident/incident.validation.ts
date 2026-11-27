@@ -5,6 +5,7 @@ import {
   INCIDENT_SEVERITY,
   EVIDENCE_TYPE,
   EVIDENCE_ACCESS_ACTION,
+  EVIDENCE_LIFECYCLE_FILTER,
 } from "../../common/constants/incident.constant";
 
 const UUID_REGEX =
@@ -95,14 +96,85 @@ export const createEvidenceSchema = z.object({
   metadata: createEvidenceMetadataSchema.optional(),
 });
 
+const evidenceFilterShape = {
+  incidentId: uuidSchema.optional(),
+  siteId: uuidSchema.optional(),
+  cameraId: uuidSchema.optional(),
+  cameraIds: uuidListQuerySchema,
+  evidenceType: z
+    .enum([
+      EVIDENCE_TYPE.SNAPSHOT,
+      EVIDENCE_TYPE.REFERENCE_SNAPSHOT,
+      EVIDENCE_TYPE.VIDEO_CLIP,
+    ])
+    .optional(),
+  violationType: z
+    .enum([
+      VIOLATION_TYPE.NO_HELMET,
+      VIOLATION_TYPE.NO_VEST,
+      VIOLATION_TYPE.RESTRICTED_AREA,
+      VIOLATION_TYPE.MULTI_VIOLATION,
+    ])
+    .optional(),
+  incidentStatus: z
+    .enum([
+      INCIDENT_STATUS.PENDING_REVIEW,
+      INCIDENT_STATUS.CONFIRMED,
+      INCIDENT_STATUS.DISMISSED,
+      INCIDENT_STATUS.RESOLVED,
+      INCIDENT_STATUS.CLOSED,
+    ])
+    .optional(),
+  lifecycle: z
+    .enum([
+      EVIDENCE_LIFECYCLE_FILTER.ACTIVE,
+      EVIDENCE_LIFECYCLE_FILTER.OPEN,
+      EVIDENCE_LIFECYCLE_FILTER.ARCHIVED,
+      INCIDENT_STATUS.PENDING_REVIEW,
+      INCIDENT_STATUS.CONFIRMED,
+      INCIDENT_STATUS.DISMISSED,
+      INCIDENT_STATUS.RESOLVED,
+      INCIDENT_STATUS.CLOSED,
+    ])
+    .optional(),
+  hasChecksum: booleanQuerySchema,
+  search: z.string().trim().max(200).optional(),
+  fromDate: z.coerce.date().optional(),
+  toDate: z.coerce.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+};
+
+export const evidenceSummaryQuerySchema = z.object(evidenceFilterShape);
+
 export const evidenceQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  incidentId: uuidSchema.optional(),
-  cameraId: uuidSchema.optional(),
-  evidenceType: z.enum([EVIDENCE_TYPE.SNAPSHOT, EVIDENCE_TYPE.REFERENCE_SNAPSHOT, EVIDENCE_TYPE.VIDEO_CLIP]).optional(),
-  sortBy: z.enum(["capturedAt", "createdAt"]).optional(),
+  ...evidenceFilterShape,
+  sortBy: z.enum(["capturedAt", "createdAt", "fileSize"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
+});
+
+export const evidenceAccessLogsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  action: z
+    .enum([
+      EVIDENCE_ACCESS_ACTION.VIEW,
+      EVIDENCE_ACCESS_ACTION.DOWNLOAD,
+      EVIDENCE_ACCESS_ACTION.VERIFY,
+      EVIDENCE_ACCESS_ACTION.DELETE,
+    ])
+    .optional(),
+});
+
+export const batchDeleteEvidencesSchema = z.object({
+  ids: z
+    .array(uuidSchema, {
+      required_error: "Danh sách ID bằng chứng (ids) là bắt buộc",
+    })
+    .min(1, "Danh sách ID bằng chứng không được để trống")
+    .max(100, "Tối đa 100 bằng chứng mỗi lần xóa hàng loạt"),
 });
 
 // ── Incident Schemas ─────────────────────────────────────────────────────────

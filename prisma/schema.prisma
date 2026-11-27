@@ -50,6 +50,9 @@ model Evidence {
   accessLogs EvidenceAccessLog[]
 
   @@index([incidentId])
+  @@index([capturedAt])
+  @@index([evidenceType, capturedAt])
+  @@index([cameraId, capturedAt])
   @@map("evidences")
 }
 

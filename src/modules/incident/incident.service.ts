@@ -39,6 +39,12 @@ import {
   CreateIncidentCommentDto,
   CreateEvidenceDto,
   EvidenceQueryDto,
+  EvidenceSummaryQueryDto,
+  EvidenceSummaryDto,
+  EvidenceAccessLogsQueryDto,
+  EvidenceAccessLogItemDto,
+  BatchDeleteEvidencesDto,
+  BatchDeleteEvidencesResultDto,
 } from "./incident.dto";
 import {
   RequestEvidenceUploadUrlDto,
@@ -119,10 +125,10 @@ export class IncidentService {
     );
 
     const snapshotDownloadUrl = snapshotEv?.storageKey
-      ? `/api/v1/incidents/evidences/${snapshotEv.id}/download`
+      ? `/api/v1/evidences/${snapshotEv.id}/download-url`
       : undefined;
     const referenceDownloadUrl = refEv?.storageKey
-      ? `/api/v1/incidents/evidences/${refEv.id}/download`
+      ? `/api/v1/evidences/${refEv.id}/download-url`
       : undefined;
 
     this.notification
@@ -794,10 +800,33 @@ export class IncidentService {
     });
   }
 
+  private assertEvidenceSiteAccess(
+    evidence: { incident?: { siteId?: string | null } | null },
+    userContext?: IncidentUserContext,
+  ): void {
+    const allowedSiteIds = this.resolveAllowedSiteIds(userContext);
+    if (allowedSiteIds === undefined) {
+      return;
+    }
+
+    const evidenceSiteId = evidence.incident?.siteId;
+    if (
+      allowedSiteIds.length === 0 ||
+      !evidenceSiteId ||
+      !allowedSiteIds.includes(evidenceSiteId)
+    ) {
+      throw new AppError(
+        "Bạn không có quyền truy cập hoặc tải bằng chứng thuộc công trường này",
+        403,
+        ERROR_CODE.FORBIDDEN,
+      );
+    }
+  }
+
   async getEvidenceById(
     id: string,
     actorId?: string,
-    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+    userContext?: IncidentUserContext,
   ) {
     const evidence = await this.repository.findEvidenceById(id);
     if (!evidence) {
@@ -808,32 +837,10 @@ export class IncidentService {
       );
     }
 
-    // SEC-09: Kiểm tra quyền sở hữu công trường (Site-level Ownership / BOLA guard)
-    if (userContext && evidence.incident?.siteId) {
-      const isAdmin =
-        userContext.role === ROLES.ADMIN ||
-        userContext.role === "ADMIN";
+    // SEC-09 / Issue #3: Fail-closed Site-level Ownership / BOLA guard
+    this.assertEvidenceSiteAccess(evidence, userContext);
 
-      if (!isAdmin) {
-        const allowedSiteIds = [
-          ...(userContext.siteId ? [userContext.siteId] : []),
-          ...(Array.isArray(userContext.siteIds) ? userContext.siteIds : []),
-        ];
-
-        if (
-          allowedSiteIds.length > 0 &&
-          !allowedSiteIds.includes(evidence.incident.siteId)
-        ) {
-          throw new AppError(
-            "Bạn không có quyền truy cập hoặc tải bằng chứng thuộc công trường này",
-            403,
-            ERROR_CODE.FORBIDDEN,
-          );
-        }
-      }
-    }
-
-    if (actorId) {
+    if (actorId && typeof this.repository.logEvidenceAccess === "function") {
       // Ghi nhận log truy cập bằng chứng không đồng bộ, không chặn luồng trả dữ liệu
       this.repository
         .logEvidenceAccess({
@@ -849,17 +856,206 @@ export class IncidentService {
     return evidence;
   }
 
-  async getAllEvidences(query: EvidenceQueryDto) {
-    return this.repository.findAllEvidences(query);
+  async getAllEvidences(
+    query: EvidenceQueryDto,
+    userContext?: IncidentUserContext,
+  ) {
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+    if (siteFilter !== undefined) {
+      if (
+        siteFilter.length === 0 ||
+        (query.siteId && !siteFilter.includes(query.siteId))
+      ) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: query.page || 1,
+            limit: query.limit || 20,
+            totalPages: 0,
+          },
+        };
+      }
+    }
+
+    return this.repository.findAllEvidences(query, siteFilter);
   }
 
-  async deleteEvidence(id: string) {
-    const evidence = await this.getEvidenceById(id);
+  async getEvidencesSummary(
+    query: EvidenceSummaryQueryDto,
+    userContext?: IncidentUserContext,
+  ): Promise<EvidenceSummaryDto> {
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+    if (siteFilter !== undefined) {
+      if (
+        siteFilter.length === 0 ||
+        (query.siteId && !siteFilter.includes(query.siteId))
+      ) {
+        return {
+          total: 0,
+          byType: {
+            [EVIDENCE_TYPE.SNAPSHOT]: 0,
+            [EVIDENCE_TYPE.REFERENCE_SNAPSHOT]: 0,
+            [EVIDENCE_TYPE.VIDEO_CLIP]: 0,
+          },
+          totalBytes: 0,
+          withChecksumCount: 0,
+        };
+      }
+    }
+
+    return this.repository.getEvidencesSummary(query, siteFilter);
+  }
+
+  async deleteEvidence(id: string, userContext?: IncidentUserContext) {
+    const evidence = await this.getEvidenceById(id, undefined, userContext);
+
+    if (evidence.incident?.status === INCIDENT_STATUS.CLOSED) {
+      throw new AppError(
+        "Không thể xóa bằng chứng thuộc sự cố đã đóng",
+        400,
+        ERROR_CODE.BAD_REQUEST,
+      );
+    }
+
+    const actorId = userContext?.id;
+    if (actorId && typeof this.repository.logEvidenceAccess === "function") {
+      await this.repository
+        .logEvidenceAccess({
+          evidenceId: id,
+          userId: actorId,
+          action: EVIDENCE_ACCESS_ACTION.DELETE,
+        })
+        .catch((err) => {
+          console.warn(
+            "[IncidentService] Không thể ghi log DELETE bằng chứng:",
+            err?.message || err,
+          );
+        });
+    }
+
     const deleted = await this.repository.deleteEvidence(id);
     if (evidence.storageKey) {
       await this.storage.deleteObject(evidence.storageKey);
     }
     return deleted;
+  }
+
+  async batchDeleteEvidences(
+    dto: BatchDeleteEvidencesDto,
+    userContext?: IncidentUserContext,
+  ): Promise<BatchDeleteEvidencesResultDto> {
+    const uniqueIds = Array.from(new Set(dto.ids));
+    const siteFilter = this.resolveAllowedSiteIds(userContext);
+
+    if (siteFilter !== undefined && siteFilter.length === 0) {
+      return {
+        total: uniqueIds.length,
+        deletedCount: 0,
+        deletedIds: [],
+        skippedIds: uniqueIds,
+      };
+    }
+
+    const foundEvidences = await this.repository.findEvidencesByIds(uniqueIds);
+    const foundMap = new Map<string, any>(
+      foundEvidences.map((ev: any) => [ev.id, ev]),
+    );
+
+    const deletableEvidences: any[] = [];
+    const skippedIds: string[] = [];
+
+    for (const id of uniqueIds) {
+      const ev = foundMap.get(id);
+      if (!ev) {
+        skippedIds.push(id);
+        continue;
+      }
+      if (
+        siteFilter !== undefined &&
+        (!ev.incident?.siteId || !siteFilter.includes(ev.incident.siteId))
+      ) {
+        skippedIds.push(id);
+        continue;
+      }
+      if (ev.incident?.status === INCIDENT_STATUS.CLOSED) {
+        skippedIds.push(id);
+        continue;
+      }
+      deletableEvidences.push(ev);
+    }
+
+    const deletableIds = deletableEvidences.map((ev) => ev.id);
+
+    if (deletableIds.length > 0) {
+      const actorId = userContext?.id;
+      if (actorId && typeof this.repository.logEvidenceAccess === "function") {
+        await Promise.allSettled(
+          deletableIds.map((evidenceId) =>
+            this.repository.logEvidenceAccess({
+              evidenceId,
+              userId: actorId,
+              action: EVIDENCE_ACCESS_ACTION.DELETE,
+            }),
+          ),
+        );
+      }
+
+      await this.repository.deleteEvidencesByIds(deletableIds);
+
+      await Promise.allSettled(
+        deletableEvidences
+          .filter((ev) => Boolean(ev.storageKey))
+          .map((ev) => this.storage.deleteObject(ev.storageKey)),
+      );
+    }
+
+    return {
+      total: uniqueIds.length,
+      deletedCount: deletableIds.length,
+      deletedIds: deletableIds,
+      skippedIds,
+    };
+  }
+
+  async getEvidenceAccessLogs(
+    evidenceId: string,
+    query: EvidenceAccessLogsQueryDto = {},
+    userContext?: IncidentUserContext,
+  ): Promise<PaginatedResultDto<EvidenceAccessLogItemDto>> {
+    const evidence = await this.getEvidenceById(
+      evidenceId,
+      undefined,
+      userContext,
+    );
+    const logsResult = await this.repository.findEvidenceAccessLogs(
+      evidenceId,
+      query,
+    );
+
+    if (!logsResult.data || logsResult.data.length === 0) {
+      return logsResult;
+    }
+
+    const userMap = await this.fetchSiteUserMap(evidence.incident?.siteId);
+    if (userMap.size === 0) {
+      return logsResult;
+    }
+
+    return {
+      ...logsResult,
+      data: logsResult.data.map((log) => {
+        const matched = userMap.get(log.userId);
+        const userName =
+          matched?.fullName?.trim() || matched?.email?.trim() || log.userName;
+        const userRole = matched?.role?.trim() || log.userRole;
+        return {
+          ...log,
+          ...(userName ? { userName } : {}),
+          ...(userRole ? { userRole } : {}),
+        };
+      }),
+    };
   }
 
   // ── Evidence Storage Abstraction Operations (BE-07) ────────────────────────
@@ -869,8 +1065,10 @@ export class IncidentService {
   async requestEvidenceUploadUrl(
     dto: RequestEvidenceUploadUrlDto,
     _actorId: string,
+    userContext?: IncidentUserContext,
   ): Promise<EvidenceUploadUrlResponseDto> {
     const incident = await this.getIncidentById(dto.incidentId);
+    this.assertEvidenceSiteAccess({ incident }, userContext);
 
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(
@@ -915,6 +1113,7 @@ export class IncidentService {
       size: number;
     },
     _actorId: string,
+    userContext?: IncidentUserContext,
   ) {
     if (!file || !file.buffer || file.buffer.length === 0) {
       throw new AppError(
@@ -925,6 +1124,7 @@ export class IncidentService {
     }
 
     const incident = await this.getIncidentById(dto.incidentId);
+    this.assertEvidenceSiteAccess({ incident }, userContext);
     if (incident.status === INCIDENT_STATUS.CLOSED) {
       throw new AppError(
         "Không thể đính kèm bằng chứng vào sự cố đã đóng",
@@ -991,7 +1191,7 @@ export class IncidentService {
     actorId?: string,
     expiresInSeconds: number = 3600,
     action: EvidenceAccessAction = EVIDENCE_ACCESS_ACTION.DOWNLOAD,
-    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+    userContext?: IncidentUserContext,
   ): Promise<EvidenceDownloadUrlResponseDto> {
     // 1. Chỉ tìm bằng chứng và kiểm tra quyền công trường, không truyền actorId vào getEvidenceById để tránh ghi log VIEW kép
     const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
@@ -1005,7 +1205,7 @@ export class IncidentService {
     );
 
     // 3. Ghi nhận log truy vết theo đúng action thực tế được yêu cầu
-    if (actorId) {
+    if (actorId && typeof this.repository.logEvidenceAccess === "function") {
       this.repository
         .logEvidenceAccess({
           evidenceId,
@@ -1034,7 +1234,8 @@ export class IncidentService {
    */
   async verifyEvidenceIntegrity(
     evidenceId: string,
-    userContext?: { role?: string; siteId?: string; siteIds?: string[] },
+    userContext?: IncidentUserContext,
+    actorId?: string,
   ): Promise<VerifyEvidenceChecksumResponseDto> {
     const evidence = await this.getEvidenceById(evidenceId, undefined, userContext);
     const expectedChecksum = evidence.metadata?.checksum;
@@ -1051,6 +1252,25 @@ export class IncidentService {
       evidence.storageKey,
       expectedChecksum,
     );
+
+    const resolvedActorId = actorId || userContext?.id;
+    if (
+      resolvedActorId &&
+      typeof this.repository.logEvidenceAccess === "function"
+    ) {
+      this.repository
+        .logEvidenceAccess({
+          evidenceId,
+          userId: resolvedActorId,
+          action: EVIDENCE_ACCESS_ACTION.VERIFY,
+        })
+        .catch((err) => {
+          console.warn(
+            "[IncidentService] Không thể ghi log VERIFY bằng chứng:",
+            err?.message || err,
+          );
+        });
+    }
 
     return {
       evidenceId,

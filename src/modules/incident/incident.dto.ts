@@ -5,6 +5,7 @@ import {
   EvidenceType,
   AssignmentStatus,
   EvidenceAccessAction,
+  EvidenceLifecycleFilter,
 } from "../../common/constants/incident.constant";
 import {
   PaginationMeta,
@@ -36,20 +37,78 @@ export interface CreateEvidenceDto {
   metadata?: CreateEvidenceMetadataDto;
 }
 
-export interface EvidenceQueryDto {
+export interface IncidentSummaryRefDto {
+  id: string;
+  siteId: string;
+  cameraId: string;
+  violationType: ViolationType | string;
+  severity: IncidentSeverity | string;
+  status: IncidentStatus | string;
+  detectedAt: Date;
+}
+
+export interface EvidenceSummaryQueryDto {
+  incidentId?: string;
+  siteId?: string;
+  cameraId?: string;
+  cameraIds?: string[];
+  evidenceType?: EvidenceType;
+  violationType?: ViolationType;
+  incidentStatus?: IncidentStatus;
+  lifecycle?: EvidenceLifecycleFilter | IncidentStatus;
+  hasChecksum?: boolean;
+  search?: string;
+  fromDate?: string | Date;
+  toDate?: string | Date;
+  startDate?: string | Date;
+  endDate?: string | Date;
+}
+
+export interface EvidenceQueryDto extends EvidenceSummaryQueryDto {
   page?: number;
   limit?: number;
-  incidentId?: string;
-  cameraId?: string;
-  evidenceType?: EvidenceType;
-  sortBy?: "capturedAt" | "createdAt";
+  sortBy?: "capturedAt" | "createdAt" | "fileSize";
   sortOrder?: "asc" | "desc";
+}
+
+export interface EvidenceSummaryDto {
+  total: number;
+  byType: Record<EvidenceType, number>;
+  totalBytes: number;
+  withChecksumCount: number;
 }
 
 export interface CreateEvidenceAccessLogDto {
   evidenceId: string;
   userId: string;
   action: EvidenceAccessAction;
+}
+
+export interface EvidenceAccessLogsQueryDto {
+  page?: number;
+  limit?: number;
+  action?: EvidenceAccessAction;
+}
+
+export interface EvidenceAccessLogItemDto {
+  id: string;
+  evidenceId: string;
+  userId: string;
+  userName?: string;
+  userRole?: string;
+  action: EvidenceAccessAction | string;
+  accessedAt: Date;
+}
+
+export interface BatchDeleteEvidencesDto {
+  ids: string[];
+}
+
+export interface BatchDeleteEvidencesResultDto {
+  total: number;
+  deletedCount: number;
+  deletedIds: string[];
+  skippedIds: string[];
 }
 
 // ── Incident DTOs ────────────────────────────────────────────────────────────
@@ -151,6 +210,7 @@ export interface IncidentEvidenceItemDto {
   capturedAt: Date;
   createdAt: Date;
   metadata?: CreateEvidenceMetadataDto | null;
+  incident?: IncidentSummaryRefDto;
 }
 
 export interface IncidentAssignmentItemDto {

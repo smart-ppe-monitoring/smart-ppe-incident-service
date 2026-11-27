@@ -32,30 +32,73 @@ export interface VerifyChecksumResult {
   expectedChecksum: string;
 }
 
+export interface EvidenceStorageServiceOptions {
+  presignClient?: S3Client;
+  endpoint?: string;
+  publicEndpoint?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  forcePathStyle?: boolean;
+}
+
 export class EvidenceStorageService {
   private readonly client: S3Client;
+  private readonly presignClient: S3Client;
   private readonly bucketName: string;
 
-  constructor(s3Client?: S3Client, bucket?: string) {
+  constructor(
+    s3Client?: S3Client,
+    bucket?: string,
+    options?: EvidenceStorageServiceOptions,
+  ) {
     this.bucketName = bucket || envConfig.minio.bucketEvidences || "ppe-evidences";
 
     if (s3Client) {
       this.client = s3Client;
+      this.presignClient = options?.presignClient || s3Client;
     } else {
       const minioConfig = envConfig.minio;
-      const isMinio = Boolean(minioConfig.endpoint && minioConfig.endpoint.trim());
+      const endpoint = (options?.endpoint ?? minioConfig.endpoint ?? "").trim();
+      const publicEndpoint = (
+        options?.publicEndpoint ??
+        minioConfig.publicEndpoint ??
+        ""
+      ).trim();
+      const accessKeyId = options?.accessKeyId ?? minioConfig.accessKeyId;
+      const secretAccessKey =
+        options?.secretAccessKey ?? minioConfig.secretAccessKey;
+      const forcePathStyle =
+        options?.forcePathStyle ?? minioConfig.forcePathStyle;
+      const isMinio = Boolean(endpoint);
 
       if (isMinio) {
-        // Cấu hình S3 Client kết nối tới MinIO S3 Object Storage
+        // Cấu hình S3 Client kết nối tới MinIO S3 Object Storage (nội bộ Docker hoặc localhost)
         this.client = new S3Client({
           region: "us-east-1", // MinIO mặc định us-east-1
-          endpoint: minioConfig.endpoint,
+          endpoint,
           credentials: {
-            accessKeyId: minioConfig.accessKeyId,
-            secretAccessKey: minioConfig.secretAccessKey,
+            accessKeyId,
+            secretAccessKey,
           },
-          forcePathStyle: minioConfig.forcePathStyle, // MinIO yêu cầu forcePathStyle = true
+          forcePathStyle, // MinIO yêu cầu forcePathStyle = true
         });
+
+        // Ký Presigned URL bằng publicEndpoint (nếu khác endpoint nội bộ) để giữ nguyên chữ ký SigV4 trên trình duyệt
+        if (options?.presignClient) {
+          this.presignClient = options.presignClient;
+        } else if (publicEndpoint && publicEndpoint !== endpoint) {
+          this.presignClient = new S3Client({
+            region: "us-east-1",
+            endpoint: publicEndpoint,
+            credentials: {
+              accessKeyId,
+              secretAccessKey,
+            },
+            forcePathStyle,
+          });
+        } else {
+          this.presignClient = this.client;
+        }
       } else {
         // Fallback sang Cloudflare R2 nếu không dùng MinIO
         const r2 = envConfig.r2;
@@ -67,6 +110,7 @@ export class EvidenceStorageService {
             secretAccessKey: r2.secretAccessKey,
           },
         });
+        this.presignClient = options?.presignClient || this.client;
       }
     }
   }
@@ -116,7 +160,7 @@ export class EvidenceStorageService {
       ContentType: mimeType,
     });
 
-    return getSignedUrl(this.client, command, {
+    return getSignedUrl(this.presignClient, command, {
       expiresIn: expiresInSeconds,
     });
   }
@@ -147,7 +191,7 @@ export class EvidenceStorageService {
       ResponseContentDisposition: contentDisposition,
     });
 
-    return getSignedUrl(this.client, command, {
+    return getSignedUrl(this.presignClient, command, {
       expiresIn: expiresInSeconds,
     });
   }
