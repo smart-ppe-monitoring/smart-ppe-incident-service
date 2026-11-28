@@ -1597,6 +1597,80 @@ export class IncidentService {
   }
 
   /**
+   * Tải trực tiếp binary hình ảnh bằng chứng từ MinIO/S3 phục vụ kênh cảnh báo nội bộ M2M (vd: Zalo Bot).
+   * Ràng buộc chặt `evidence.incidentId === expectedIncidentId` để chống Cross-Site Evidence BOLA.
+   */
+  async getEvidenceBinaryForInternal(
+    evidenceId: string,
+    expectedIncidentId: string,
+  ): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    fileName: string;
+  }> {
+    const evidence = await this.repository.findEvidenceById(evidenceId);
+    if (!evidence) {
+      throw new AppError(
+        "Không tìm thấy bằng chứng vi phạm",
+        404,
+        ERROR_CODE.EVIDENCE_NOT_FOUND,
+      );
+    }
+
+    if (!expectedIncidentId || evidence.incidentId !== expectedIncidentId) {
+      throw new AppError(
+        "Bằng chứng không thuộc sự cố được yêu cầu",
+        403,
+        ERROR_CODE.FORBIDDEN,
+      );
+    }
+
+    const ALLOWED_INTERNAL_EVIDENCE_IMAGE_MIMES = new Set([
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+    ]);
+    const mimeType = (evidence.mimeType || "image/jpeg").toLowerCase();
+    if (!ALLOWED_INTERNAL_EVIDENCE_IMAGE_MIMES.has(mimeType)) {
+      throw new AppError(
+        "Chỉ hỗ trợ tải tệp hình ảnh raster (JPEG, PNG, WEBP, GIF) cho kênh cảnh báo",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const MAX_INTERNAL_IMAGE_BYTES = 10 * 1024 * 1024;
+    if (
+      evidence.fileSize !== undefined &&
+      evidence.fileSize !== null &&
+      Number(evidence.fileSize) > MAX_INTERNAL_IMAGE_BYTES
+    ) {
+      throw new AppError(
+        "Kích thước ảnh bằng chứng vượt quá giới hạn tối đa 10MB",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const buffer = await this.storage.getObjectBuffer(evidence.storageKey);
+    if (!buffer || buffer.length === 0 || buffer.length > MAX_INTERNAL_IMAGE_BYTES) {
+      throw new AppError(
+        "Kích thước ảnh bằng chứng không hợp lệ hoặc vượt quá giới hạn 10MB",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    return {
+      buffer,
+      mimeType,
+      fileName: evidence.fileName || "evidence.jpg",
+    };
+  }
+
+  /**
    * Kiểm tra tính toàn vẹn pháp lý (Tamper Evidence Checksum Verification)
    * Tải tệp từ MinIO/S3 và đối chiếu mã băm SHA-256 với giá trị lưu trong CSDL
    */

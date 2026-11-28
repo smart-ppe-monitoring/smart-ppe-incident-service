@@ -608,6 +608,29 @@ export class IncidentController {
     }
   };
 
+  getInternalEvidenceContent = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { id } = req.params;
+      const incidentId = String(req.query.incidentId || "");
+      const result = await this.service.getEvidenceBinaryForInternal(id, incidentId);
+      res.setHeader("Content-Type", result.mimeType);
+      res.setHeader("Content-Length", String(result.buffer.length));
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader(
+        "X-Evidence-Filename",
+        encodeURIComponent(result.fileName),
+      );
+      res.status(200).send(result.buffer);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   verifyEvidenceIntegrity = async (
     req: Request,
     res: Response,

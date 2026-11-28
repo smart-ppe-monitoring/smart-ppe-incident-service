@@ -504,3 +504,7 @@ export const createIncidentCommentSchema = z.object({
     .min(1, "Nội dung bình luận không được để trống")
     .max(2000, "Nội dung bình luận không được vượt quá 2000 ký tự"),
 });
+
+export const internalEvidenceContentQuerySchema = z.object({
+  incidentId: uuidSchema,
+});

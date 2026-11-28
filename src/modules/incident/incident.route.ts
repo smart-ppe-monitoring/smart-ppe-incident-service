@@ -28,6 +28,7 @@ import {
   evidenceSummaryQuerySchema,
   evidenceAccessLogsQuerySchema,
   batchDeleteEvidencesSchema,
+  internalEvidenceContentQuerySchema,
 } from "./incident.validation";
 import {
   requestEvidenceUploadUrlSchema,
@@ -105,7 +106,15 @@ incidentRouter.get(
   incidentController.getFeedbackDataset,
 );
 
-// Internal M2M endpoint cho Notification Service tra cứu sự cố (MUST stay before /:id param route)
+// Internal M2M endpoint cho Notification Service tra cứu sự cố & tải ảnh bằng chứng (MUST stay before /:id param route)
+incidentRouter.get(
+  "/internal/evidences/:id/content",
+  requireInternalServiceToken,
+  validate(evidenceIdParamSchema, "params"),
+  validate(internalEvidenceContentQuerySchema, "query"),
+  incidentController.getInternalEvidenceContent,
+);
+
 incidentRouter.get(
   "/internal/:id",
   requireInternalServiceToken,
